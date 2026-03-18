@@ -1,4 +1,4 @@
-name: 自动打包
+name: 自动打包 Windows
 
 on:
   push:
@@ -6,56 +6,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── Mac 版本（Apple Silicon）──────────────────────────────
-  build-mac:
-    runs-on: macos-latest
-    defaults:
-      run:
-        working-directory: xhsbj
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 配置 Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: 安装依赖
-        run: pip install PyQt6 Pillow numpy av pyinstaller
-
-      - name: 确保 templates 目录存在
-        run: mkdir -p templates
-
-      - name: PyInstaller 打包
-        run: |
-          pyinstaller \
-            --windowed \
-            --name "PPT场景合成工具" \
-            --add-data "templates:templates" \
-            --hidden-import "PIL._tkinter_finder" \
-            --hidden-import "av" \
-            --collect-all "av" \
-            --noconfirm \
-            main.py
-
-      - name: 创建 DMG
-        run: |
-          mkdir -p dist/dmg_tmp
-          cp -r "dist/PPT场景合成工具.app" dist/dmg_tmp/
-          hdiutil create \
-            -volname "PPT场景合成工具" \
-            -srcfolder dist/dmg_tmp \
-            -ov -format UDZO \
-            "dist/PPT场景合成工具_mac_arm64.dmg"
-
-      - name: 上传 Mac 安装包
-        uses: actions/upload-artifact@v4
-        with:
-          name: PPT场景合成工具_mac_arm64
-          path: xhsbj/dist/PPT场景合成工具_mac_arm64.dmg
-
-  # ── Windows 版本（x86_64）────────────────────────────────
   build-windows:
     runs-on: windows-latest
     defaults:

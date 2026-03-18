@@ -235,10 +235,11 @@ def pick_image(parent, title="选择图片", default_dir="") -> str:
         path, ran = _run_osascript(f'POSIX path of (choose file with prompt "{title}"{loc})')
         if ran:
             return path  # empty string if user cancelled
+    opts = QFileDialog.Option.DontUseNativeDialog if sys.platform == "darwin" else QFileDialog.Option(0)
     p, _ = QFileDialog.getOpenFileName(
         parent, title, default_dir,
         "图片文件 (*.png *.jpg *.jpeg *.bmp *.webp *.tiff)",
-        options=QFileDialog.Option.DontUseNativeDialog,
+        options=opts,
     )
     return p
 
@@ -249,10 +250,8 @@ def pick_folder(parent, title="选择文件夹", default_dir="") -> str:
         path, ran = _run_osascript(f'POSIX path of (choose folder with prompt "{title}"{loc})')
         if ran:
             return path.rstrip("/") if path else ""
-    return QFileDialog.getExistingDirectory(
-        parent, title, default_dir,
-        QFileDialog.Option.DontUseNativeDialog,
-    )
+    opts = QFileDialog.Option.DontUseNativeDialog if sys.platform == "darwin" else QFileDialog.Option(0)
+    return QFileDialog.getExistingDirectory(parent, title, default_dir, opts)
 
 
 # ── Layout helpers ────────────────────────────────────────────────────────────
@@ -981,10 +980,11 @@ class MainWindow(QMainWindow):
                     self._populate_image_mode_table()
                 return
         # Qt fallback
+        opts = QFileDialog.Option.DontUseNativeDialog if sys.platform == "darwin" else QFileDialog.Option(0)
         paths, _ = QFileDialog.getOpenFileNames(
             self, "选择图片文件", self._last_dir_images,
             "图片 (*.png *.jpg *.jpeg *.bmp *.webp *.tiff)",
-            options=QFileDialog.Option.DontUseNativeDialog,
+            options=opts,
         )
         if paths:
             self._save_dir("images", os.path.dirname(paths[0]))
@@ -1016,10 +1016,11 @@ class MainWindow(QMainWindow):
                     self._save_dir("videos", os.path.dirname(paths[0]))
                     self._populate_video_table(paths)
                 return
+        opts = QFileDialog.Option.DontUseNativeDialog if sys.platform == "darwin" else QFileDialog.Option(0)
         paths, _ = QFileDialog.getOpenFileNames(
             self, "选择视频文件", self._last_dir_videos,
             "视频 (*.mp4 *.mov *.avi *.mkv *.m4v *.wmv)",
-            options=QFileDialog.Option.DontUseNativeDialog,
+            options=opts,
         )
         if paths:
             self._save_dir("videos", os.path.dirname(paths[0]))
