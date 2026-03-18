@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /Users/xili/xhsbj
+cd /Users/xili
 
 echo "正在同步代码到 GitHub..."
 git add .
