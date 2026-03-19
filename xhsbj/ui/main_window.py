@@ -412,9 +412,10 @@ def _btn(text, slot=None, style="", w=None) -> QPushButton:
 # ── Main window ───────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
-    def __init__(self, templates_dir: str):
+    def __init__(self, templates_dir: str, build: str = "dev"):
         super().__init__()
-        self.setWindowTitle("融景")
+        title = "融景" if build == "dev" else f"融景  {build}"
+        self.setWindowTitle(title)
         self.resize(1340, 840)
         self.setMinimumSize(960, 640)
         self.setStyleSheet(STYLE)
