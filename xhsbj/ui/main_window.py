@@ -471,6 +471,12 @@ class MainWindow(QMainWindow):
             f"QTabWidget > QWidget {{ background: {_CARD}; }}"
         )
 
+        # Fill the empty space to the right of the last tab (Windows shows it black)
+        corner = QWidget()
+        self._fix_bg(corner, _CARD)
+        corner.setStyleSheet(f"background: {_CARD};")
+        self.tabs.setCornerWidget(corner, Qt.Corner.TopRightCorner)
+
         lv.addWidget(self.tabs)
         self.tabs.addTab(self._build_editor_tab(), "  模板配置  ")
         self.tabs.addTab(self._build_batch_tab(),  "  批量导出  ")
