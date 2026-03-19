@@ -195,8 +195,14 @@ _RED   = "#FA5151"   # 危险色
 - [x] Windows 黑色 tab bar 修复（QTabWidget 使用 QPalette + setAutoFillBackground，绕开 CSS transparent 渲染问题）
 - [x] 侧边栏改为 QScrollArea（表单内容可滚动，「保存模板」和「清除数据」按钮固定在底部），解决小屏下模板列表只显示 1 条的问题
 - [x] Windows 软件名称改为「融景」（build.yml 同步更新）
-- [x] 按钮改为胶囊/圆角形状（QPushButton `border-radius:18px`，#primary `22px`，#scan `18px`，modeBtn `22px`，Python setStyleSheet 也同步更新）
+- [x] 按钮改为胶囊/圆角形状（QPushButton `border-radius:18px`，#primary `22px`，#scan `22px` + `min-height:44px`，modeBtn `22px`，Python setStyleSheet 也同步更新）
 - [x] 卡片区块视觉区分（QWidget#card 渐变背景 + border-radius:16px；QLabel#h2 绿色左边框 border-left）
+- [x] step_n 徽章改为固定 28×28px 正圆形（`min/max-width/height: 28px; border-radius: 14px; padding: 0`）
+- [x] 模板列表每项加浅灰背景条（`background: {_INPUT}`），多模板时条目清晰可辨
+- [x] 模板列表外加圆角边框容器（`QWidget#tpl_list_frame`，border-radius:10px）
+- [x] 步骤 2 标题/说明文字动态切换（文件夹模式/图片批量模式不同描述）
+- [x] 新建 FEATURES.md：详细需求清单（含文件命名、路径、格式等实现细节）
+- [x] 更新 README.md：GitHub 展示页，含功能说明、技术实现、文件命名规则、格式支持表
 
 ---
 
