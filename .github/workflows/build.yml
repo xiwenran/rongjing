@@ -59,8 +59,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 找到最新 Release（由 Mac 同步脚本创建），把 Windows 包附加上去
-          $tag = gh release list --repo xiwenran/- --limit 1 --json tagName --jq '.[0].tagName' 2>$null
+          # 优先读取同步脚本提交的 RELEASE_TAG 文件，精确定位 Release
+          $tag = $null
+          $tagFile = "..\RELEASE_TAG"
+          if (Test-Path $tagFile) {
+            $tag = (Get-Content $tagFile -Raw).Trim()
+            Write-Host "从 RELEASE_TAG 文件读取 tag: $tag"
+          }
+          # 兜底：查找最新 Release
+          if (-not $tag) {
+            $tag = gh release list --repo xiwenran/- --limit 1 --json tagName --jq '.[0].tagName' 2>$null
+            Write-Host "从 gh release list 读取 tag: $tag"
+          }
           if ($tag) {
             gh release upload $tag "dist\融景_windows_x64.zip" --repo xiwenran/- --clobber
             Write-Host "已附加到 Release $tag"
