@@ -435,31 +435,33 @@ class MainWindow(QMainWindow):
 
     # ── Root ──────────────────────────────────────────────────────────────────
 
-    def _build_ui(self):
+    @staticmethod
+    def _fix_bg(widget, color: str):
+        """Force a solid background on Windows.
+        CSS background:transparent renders black on Windows when no parent paints;
+        QPalette + autoFillBackground bypasses the stylesheet for background fill."""
         from PyQt6.QtGui import QPalette, QColor as _QColor
+        pal = widget.palette()
+        for role in (QPalette.ColorRole.Window,
+                     QPalette.ColorRole.Base,
+                     QPalette.ColorRole.Button):
+            pal.setColor(role, _QColor(color))
+        widget.setPalette(pal)
+        widget.setAutoFillBackground(True)
 
-        def _fix_bg(widget, color):
-            """Set palette background as a fallback for Windows black-area rendering."""
-            pal = widget.palette()
-            for role in (QPalette.ColorRole.Window,
-                         QPalette.ColorRole.Base,
-                         QPalette.ColorRole.Button):
-                pal.setColor(role, _QColor(color))
-            widget.setPalette(pal)
-            widget.setAutoFillBackground(True)
-
-        _fix_bg(self, _WIN)
+    def _build_ui(self):
+        self._fix_bg(self, _WIN)
 
         root = QWidget()
         self.setCentralWidget(root)
-        _fix_bg(root, _WIN)
+        self._fix_bg(root, _WIN)
 
         lv = QVBoxLayout(root)
         lv.setContentsMargins(0, 0, 0, 0); lv.setSpacing(0)
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.TabPosition.North)
-        _fix_bg(self.tabs, _CARD)
-        _fix_bg(self.tabs.tabBar(), _CARD)
+        self._fix_bg(self.tabs, _CARD)
+        self._fix_bg(self.tabs.tabBar(), _CARD)
 
         # On Windows, a widget's OWN stylesheet always beats the inherited parent
         # stylesheet, regardless of selector specificity.  Setting QTabBar background
@@ -477,12 +479,14 @@ class MainWindow(QMainWindow):
 
     def _build_editor_tab(self):
         tab = QWidget()
+        self._fix_bg(tab, _WIN)
         root = QHBoxLayout(tab)
         root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
         # ── Sidebar ───────────────────────────────────────────────────────────
         sidebar = QWidget(); sidebar.setObjectName("sidebar"); sidebar.setFixedWidth(420)
         sidebar.setStyleSheet(f"QWidget#sidebar{{background:{_SIDE};border-right:1px solid {_SEP};}}")
+        self._fix_bg(sidebar, _SIDE)
         sv = QVBoxLayout(sidebar)
         sv.setContentsMargins(0, 0, 0, 0); sv.setSpacing(0)
 
@@ -491,7 +495,10 @@ class MainWindow(QMainWindow):
         sb_scroll.setWidgetResizable(True)
         sb_scroll.setFrameShape(QFrame.Shape.NoFrame)
         sb_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._fix_bg(sb_scroll, _SIDE)
+        self._fix_bg(sb_scroll.viewport(), _SIDE)
         form = QWidget()
+        self._fix_bg(form, _SIDE)
         fv = QVBoxLayout(form)
         fv.setContentsMargins(14, 16, 14, 16); fv.setSpacing(0)
 
@@ -591,6 +598,7 @@ class MainWindow(QMainWindow):
 
         # ── Bottom panel: always visible (save + uninstall) ───────────────────
         bottom = QWidget()
+        self._fix_bg(bottom, _SIDE)
         bv = QVBoxLayout(bottom)
         bv.setContentsMargins(14, 8, 14, 10); bv.setSpacing(0)
 
@@ -623,13 +631,17 @@ class MainWindow(QMainWindow):
     def _build_batch_tab(self):
         # Outer scroll area
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._fix_bg(scroll, _WIN)
+        self._fix_bg(scroll.viewport(), _WIN)
         scroll_body = QWidget()
+        self._fix_bg(scroll_body, _WIN)
         scroll.setWidget(scroll_body)
         body_lv = QVBoxLayout(scroll_body)
         body_lv.setContentsMargins(0, 0, 0, 0); body_lv.setSpacing(0)
 
         # Centered content area (max 960px)
         content = QWidget(); content.setMaximumWidth(960)
+        self._fix_bg(content, _WIN)
         lv = QVBoxLayout(content)
         lv.setContentsMargins(28, 28, 28, 28); lv.setSpacing(16)
 
@@ -772,6 +784,7 @@ class MainWindow(QMainWindow):
         lv.addStretch()
 
         outer = QWidget()
+        self._fix_bg(outer, _WIN)
         ol = QVBoxLayout(outer); ol.setContentsMargins(0,0,0,0)
         ol.addWidget(scroll)
         return outer
