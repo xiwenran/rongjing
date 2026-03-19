@@ -1,5 +1,8 @@
 #!/bin/bash
-set -e
+
+# 出错时显示友好提示，不直接退出
+set -eE
+trap 'echo ""; echo "❌ 发生错误（第 $LINENO 行），请截图发给开发者。"; read -p "按回车键关闭窗口..."' ERR
 
 echo "=========================================="
 echo "  融景 — 一键发布"
@@ -19,6 +22,12 @@ cd /Users/xili/xhsbj
 ARCH=$(uname -m)
 DMG="dist/融景_${ARCH}.dmg"
 TAG="v$(date '+%Y%m%d-%H%M')"
+
+# 清理同名 draft（上次脚本中途失败时可能留下）
+if gh release view "$TAG" --repo xiwenran/- &>/dev/null; then
+  echo "  ⚠️  同名 Release 已存在，删除后重建..."
+  gh release delete "$TAG" --repo xiwenran/- --yes --cleanup-tag
+fi
 
 gh release create "$TAG" "$DMG" \
   --repo xiwenran/- \
