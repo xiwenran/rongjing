@@ -1,4 +1,5 @@
 import os
+import re
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Tuple
@@ -14,9 +15,16 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".wmv"}
 
 
+def natural_sort_key(s: str):
+    """按数字块/非数字块拆分字符串，数字块转整数比较，实现自然排序。
+    例：['1','2','10','11'] 而非字典序 ['1','10','11','2']"""
+    return [int(c) if c.isdigit() else c.lower()
+            for c in re.split(r'(\d+)', s)]
+
+
 def get_image_files(folder: str):
     files = []
-    for fn in sorted(os.listdir(folder)):
+    for fn in sorted(os.listdir(folder), key=natural_sort_key):
         if os.path.splitext(fn)[1].lower() in IMAGE_EXTS:
             files.append(os.path.join(folder, fn))
     return files

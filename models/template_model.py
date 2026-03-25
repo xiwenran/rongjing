@@ -1,7 +1,12 @@
 import json
 import os
+import re
 from dataclasses import dataclass, asdict
 from typing import List, Optional
+
+
+def _natural_key(s: str):
+    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
 
 
 @dataclass
@@ -44,7 +49,7 @@ class TemplateManager:
 
     def load_all(self) -> List[Template]:
         templates = []
-        for fn in sorted(os.listdir(self.templates_dir)):
+        for fn in sorted(os.listdir(self.templates_dir), key=_natural_key):
             if fn.endswith(".json"):
                 try:
                     with open(os.path.join(self.templates_dir, fn), "r", encoding="utf-8") as f:

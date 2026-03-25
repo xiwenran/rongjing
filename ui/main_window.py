@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, QSize, QSettings
 from PyQt6.QtGui import QFont, QColor
 
 from models.template_model import Template, TemplateManager
-from core.batch_runner import BatchRunner, VideoRunner, get_image_files
+from core.batch_runner import BatchRunner, VideoRunner, get_image_files, natural_sort_key
 from ui.canvas_widget import CanvasWidget
 
 # ── WeChat-style Light Mode palette ──────────────────────────────────────────
@@ -1074,8 +1074,9 @@ class MainWindow(QMainWindow):
         templates = self.tm.load_all()
         if not templates:
             QMessageBox.warning(self, "提示", "请先在「模板配置」中创建并保存场景模板"); return
-        subfolders = sorted(d for d in os.listdir(input_dir)
-                            if os.path.isdir(os.path.join(input_dir, d)))
+        subfolders = sorted((d for d in os.listdir(input_dir)
+                             if os.path.isdir(os.path.join(input_dir, d))),
+                            key=natural_sort_key)
         self._row_selections = {}
         self.subfolder_table.setRowCount(0)
         for sf in subfolders:
@@ -1128,6 +1129,7 @@ class MainWindow(QMainWindow):
             result, ran = _run_osascript(script)
             if ran:
                 paths = [p for p in result.strip().split("\n") if p]
+                paths.sort(key=lambda p: natural_sort_key(os.path.basename(p)))
                 if paths:
                     self._save_dir("images", os.path.dirname(paths[0]))
                 self._picked_image_files = paths
@@ -1143,6 +1145,7 @@ class MainWindow(QMainWindow):
             options=opts,
         )
         if paths:
+            paths.sort(key=lambda p: natural_sort_key(os.path.basename(p)))
             self._save_dir("images", os.path.dirname(paths[0]))
             self._picked_image_files = paths
             self.image_files_label.setText(f"已选择 {len(paths)} 张图片")
