@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QComboBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QProgressBar, QFormLayout, QSpinBox,
     QAbstractItemView, QFrame, QScrollArea, QDialog, QCheckBox, QDialogButtonBox,
-    QSizePolicy, QMenu, QWidgetAction, QStyledItemDelegate, QStyle, QStyleOptionViewItem,
+    QSizePolicy, QMenu, QWidgetAction,
 )
 from PyQt6.QtCore import Qt, QSize, QSettings, QPoint
 from PyQt6.QtGui import QFont, QColor
@@ -427,24 +427,22 @@ class TemplatePickerDialog(QDialog):
         return [c.text() for c in self._checks if c.isChecked()]
 
 
-class _GreenDelegate(QStyledItemDelegate):
-    """Custom item delegate that paints green selection, bypassing macOS Aqua native blue."""
-    _SEL = QColor(7, 193, 96, 50)
-
-    def paint(self, painter, option, index):
-        if option.state & QStyle.StateFlag.State_Selected:
-            painter.fillRect(option.rect, self._SEL)
-            # Strip Selected/Focus so base class won't paint native blue on top
-            opt = QStyleOptionViewItem(option)
-            opt.state &= ~(QStyle.StateFlag.State_Selected | QStyle.StateFlag.State_HasFocus)
-            super().paint(painter, opt, index)
-        else:
-            super().paint(painter, option, index)
-
-
 def _set_green_selection(table_widget):
-    """Force green selection color via custom delegate (only way to override macOS Aqua blue)."""
-    table_widget.setItemDelegate(_GreenDelegate(table_widget))
+    """Force green selection by switching table to Fusion style (bypasses macOS Aqua blue)."""
+    from PyQt6.QtWidgets import QStyleFactory
+    fusion = QStyleFactory.create("Fusion")
+    if fusion:
+        table_widget.setStyle(fusion)
+        table_widget.viewport().setStyle(fusion)
+    green = QColor(7, 193, 96, 60)
+    text  = QColor(25, 25, 25)
+    for w in (table_widget, table_widget.viewport()):
+        pal = w.palette()
+        for grp in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+            pal.setColor(grp, QPalette.ColorRole.Highlight, green)
+            pal.setColor(grp, QPalette.ColorRole.HighlightedText, text)
+        w.setPalette(pal)
+        w.setAutoFillBackground(True)
 
 def _card(*items, pad=(20,18,20,18)) -> QWidget:
     w = QWidget(); w.setObjectName("card")
