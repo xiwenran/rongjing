@@ -1,6 +1,6 @@
 #!/bin/bash
 # 打包为 macOS .app + .dmg（便于分发给其他 Mac 用户）
-# 运行方式：cd /Users/xili/xhsbj && bash build_app.sh
+# 运行方式：bash build_app.sh（在仓库根目录执行）
 #
 # 注意：在哪种 Mac 上打包，就只能在同架构 Mac 上运行：
 #   Apple Silicon (M1/M2/M3) → 生成的包只能在 M 系列 Mac 运行

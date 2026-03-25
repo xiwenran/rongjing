@@ -11,9 +11,6 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: xhsbj
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -61,7 +58,7 @@ jobs:
         run: |
           # 优先读取同步脚本提交的 RELEASE_TAG 文件，精确定位 Release
           $tag = $null
-          $tagFile = "..\RELEASE_TAG"
+          $tagFile = "RELEASE_TAG"
           if (Test-Path $tagFile) {
             $tag = (Get-Content $tagFile -Raw).Trim()
             Write-Host "从 RELEASE_TAG 文件读取 tag: $tag"
@@ -83,4 +80,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: 融景_windows_x64
-          path: xhsbj/dist/融景_windows_x64.zip
+          path: dist/融景_windows_x64.zip

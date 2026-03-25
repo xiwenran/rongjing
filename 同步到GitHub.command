@@ -9,16 +9,17 @@ echo "  融景 — 一键发布"
 echo "=========================================="
 echo ""
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # ── 步骤 1：本地打包 Mac 版本 ──
 echo "▶ 步骤 1/3  打包 Mac 版本..."
-cd /Users/xili/xhsbj
+cd "$SCRIPT_DIR"
 bash build_app.sh
 echo ""
 
 # ── 步骤 2：创建 GitHub Release 并上传 Mac DMG ──
 # 必须在 push 之前创建 Release，这样 Windows Actions 一启动就能找到 Release
 echo "▶ 步骤 2/3  创建 GitHub Release 并上传 Mac 安装包..."
-cd /Users/xili/xhsbj
 ARCH=$(uname -m)
 DMG="dist/融景_${ARCH}.dmg"
 TAG="v$(date '+%Y%m%d-%H%M')"
@@ -38,10 +39,10 @@ echo ""
 # ── 步骤 3：同步代码到 GitHub（触发 Windows 自动打包）──
 # Release 已存在，Windows Actions 运行结束后会自动 attach ZIP
 echo "▶ 步骤 3/3  同步代码到 GitHub（触发 Windows 自动打包）..."
-cd /Users/xili
+cd "$SCRIPT_DIR"
 # 写入 release tag 文件，确保每次都有新 commit（避免 no-op push 导致 Actions 不触发）
 echo "$TAG" > RELEASE_TAG
-git add xhsbj/ .github/ README.md RELEASE_TAG
+git add core/ ui/ models/ templates/ *.py *.sh *.txt *.md .gitignore RELEASE_TAG .github/
 MSG="更新 $(date '+%Y-%m-%d %H:%M')"
 git commit -m "$MSG"
 git push

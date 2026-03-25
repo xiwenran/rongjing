@@ -1,3 +1,3 @@
 #!/bin/bash
-cd /Users/xili/xhsbj
+cd "$(dirname "$0")"
 python3 main.py
