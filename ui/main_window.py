@@ -713,89 +713,181 @@ class MainWindow(QMainWindow):
     # ── Batch tab ─────────────────────────────────────────────────────────────
 
     def _build_batch_tab(self):
-        # Outer scroll area
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._fix_bg(scroll, _WIN)
-        self._fix_bg(scroll.viewport(), _WIN)
-        self._mark_styled_bg(scroll.viewport(), "batch_viewport")
-        scroll_body = QWidget()
-        self._fix_bg(scroll_body, _WIN)
-        self._mark_styled_bg(scroll_body, "batch_scroll_body")
-        scroll.setWidget(scroll_body)
-        body_lv = QVBoxLayout(scroll_body)
-        body_lv.setContentsMargins(0, 0, 0, 0); body_lv.setSpacing(0)
+        # ── Root: horizontal split (left config | right assignment) ──────────
+        outer = QWidget()
+        self._fix_bg(outer, _WIN)
+        self._mark_styled_bg(outer, "batch_outer")
+        main_hl = QHBoxLayout(outer)
+        main_hl.setContentsMargins(0, 0, 0, 0); main_hl.setSpacing(0)
 
-        # Centered content area (max 960px)
-        content = QWidget(); content.setMaximumWidth(960)
-        self._fix_bg(content, _WIN)
-        self._mark_styled_bg(content, "batch_content")
-        lv = QVBoxLayout(content)
-        lv.setContentsMargins(28, 28, 28, 28); lv.setSpacing(16)
+        # ── Left sidebar (config panel, same style as editor sidebar) ─────────
+        left_side = QWidget(); left_side.setFixedWidth(380)
+        self._fix_bg(left_side, _SIDE)
+        self._mark_styled_bg(left_side, "sidebar")
+        lsv = QVBoxLayout(left_side)
+        lsv.setContentsMargins(0, 0, 0, 0); lsv.setSpacing(0)
 
-        h_center = QHBoxLayout(); h_center.setContentsMargins(0, 0, 0, 0)
-        h_center.addStretch(); h_center.addWidget(content); h_center.addStretch()
-        body_lv.addLayout(h_center); body_lv.addStretch()
+        # Scrollable form content
+        ls_scroll = QScrollArea(); ls_scroll.setWidgetResizable(True)
+        ls_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        ls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._fix_bg(ls_scroll, _SIDE); self._fix_bg(ls_scroll.viewport(), _SIDE)
+        self._mark_styled_bg(ls_scroll.viewport(), "editor_viewport")
+        ls_form = QWidget(); self._fix_bg(ls_form, _SIDE)
+        self._mark_styled_bg(ls_form, "editor_form")
+        fv = QVBoxLayout(ls_form)
+        fv.setContentsMargins(14, 16, 14, 16); fv.setSpacing(0)
 
-        # Mode selector — Radio Cards
-        mode_row = QHBoxLayout(); mode_row.setSpacing(10)
+        # Mode selector (compact cards)
+        fv.addWidget(_lbl("处理模式", "h2"))
+        fv.addSpacing(10)
+        mode_row = QHBoxLayout(); mode_row.setSpacing(8)
         self._mode_cards = []
         mode_data = [
-            ("📁", "图片文件夹", "按子文件夹分组\n批量处理"),
-            ("🖼", "图片批量", "手动选多图\n统一应用模板"),
-            ("🎬", "视频文件", "视频逐帧嵌入\n输出合成视频"),
+            ("📁", "图片文件夹", "按子文件夹\n分组批量"),
+            ("🖼", "图片批量", "手动选多图\n统一模板"),
+            ("🎬", "视频文件", "视频逐帧\n嵌入背景"),
         ]
         for i, (icon, title, desc) in enumerate(mode_data):
             card = QWidget(); card.setObjectName("modeCard")
             card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
             card.setCursor(Qt.CursorShape.PointingHandCursor)
-            cv = QVBoxLayout(card); cv.setContentsMargins(14, 14, 14, 14); cv.setSpacing(4)
+            cv = QVBoxLayout(card); cv.setContentsMargins(8, 10, 8, 10); cv.setSpacing(3)
             lbl_icon = QLabel(icon); lbl_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl_icon.setStyleSheet("font-size:28px; background:transparent;")
+            lbl_icon.setStyleSheet("font-size:22px; background:transparent;")
             lbl_title = QLabel(title); lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl_title.setStyleSheet(f"font-size:13px; font-weight:700; color:{_TEXT}; background:transparent;")
+            lbl_title.setStyleSheet(f"font-size:12px; font-weight:700; color:{_TEXT}; background:transparent;")
             lbl_desc = QLabel(desc); lbl_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl_desc.setStyleSheet(f"font-size:11px; color:{_TEXT2}; background:transparent;")
+            lbl_desc.setStyleSheet(f"font-size:10px; color:{_TEXT2}; background:transparent;")
             lbl_desc.setWordWrap(True)
             cv.addWidget(lbl_icon); cv.addWidget(lbl_title); cv.addWidget(lbl_desc)
             idx_capture = i
             card.mousePressEvent = lambda e, idx=idx_capture: self._set_batch_mode(idx)
             self._mode_cards.append(card)
             mode_row.addWidget(card)
-        lv.addLayout(mode_row)
+        fv.addLayout(mode_row)
         self._batch_mode = 0
+        fv.addSpacing(16); fv.addWidget(_sep()); fv.addSpacing(14)
 
-        # Step 1 — Folder card
-        c1_folder = _card(
-            _step("1", "图片文件夹"),
-            _lbl("选择主文件夹（内含子文件夹，每个子文件夹放一组图片；若无子文件夹则直接处理根目录图片）", "hint"),
-        )
+        # Input source section
+        fv.addWidget(_lbl("输入来源", "h2"))
+        fv.addSpacing(10)
+
+        # Folder mode
+        c1_folder = QWidget(); self._fix_bg(c1_folder, _SIDE)
+        ff = QVBoxLayout(c1_folder); ff.setContentsMargins(0, 0, 0, 0); ff.setSpacing(8)
+        ff.addWidget(_lbl("选择主文件夹（内含子文件夹，每个子文件夹放一组图片；若无子文件夹则直接处理根目录图片）", "hint"))
         self.input_dir_edit = QLineEdit(); self.input_dir_edit.setReadOnly(True)
         self.input_dir_edit.setPlaceholderText("选择主文件夹路径…")
-        btn_scan = _btn("扫描文件夹", self._scan_subfolders, "scan")
-        c1_folder.layout().addLayout(_row(self.input_dir_edit, _btn("选择", self._browse_input, w=64), spacing=6))
-        c1_folder.layout().addWidget(btn_scan)
-        lv.addWidget(c1_folder)
+        ff.addLayout(_row(self.input_dir_edit, _btn("选择", self._browse_input, w=64), spacing=6))
+        ff.addWidget(_btn("扫描文件夹", self._scan_subfolders, "scan"))
+        fv.addWidget(c1_folder)
 
-        # Step 1 — Image card (hidden by default)
-        c1_image = _card(
-            _step("1", "选择图片文件"),
-            _lbl("选择要嵌入的图片文件（可多选），统一应用所选模板", "hint"),
-        )
+        # Image batch mode (hidden by default)
+        c1_image = QWidget(); self._fix_bg(c1_image, _SIDE)
+        fi = QVBoxLayout(c1_image); fi.setContentsMargins(0, 0, 0, 0); fi.setSpacing(8)
+        fi.addWidget(_lbl("选择要嵌入的图片文件（可多选），统一应用所选模板", "hint"))
         self.image_files_label = _lbl("未选择图片", "hint")
-        btn_pick_imgs = _btn("选择图片文件…", self._pick_image_files, "scan")
-        c1_image.layout().addWidget(btn_pick_imgs)
-        c1_image.layout().addWidget(self.image_files_label)
-        c1_image.hide()
-        lv.addWidget(c1_image)
+        fi.addWidget(_btn("选择图片文件…", self._pick_image_files, "scan"))
+        fi.addWidget(self.image_files_label)
+        c1_image.hide(); fv.addWidget(c1_image)
 
-        # Step 1 — Video card (hidden by default)
-        c1_video = _card(
-            _step("1", "选择视频文件"),
-            _lbl("选择视频录制文件（如 PPT 录屏），视频每帧将被嵌入场景模板的背景图中，输出合成视频", "hint"),
-        )
-        btn_pick_vids = _btn("选择视频文件…", self._pick_video_files, "scan")
-        c1_video.layout().addWidget(btn_pick_vids)
-        # Video table: columns [视频文件名, 时长, PPT图片, 模板]
+        # Video mode (hidden by default) — pick button only; table goes to right panel
+        c1_video = QWidget(); self._fix_bg(c1_video, _SIDE)
+        fvi = QVBoxLayout(c1_video); fvi.setContentsMargins(0, 0, 0, 0); fvi.setSpacing(8)
+        fvi.addWidget(_lbl("选择视频录制文件（如 PPT 录屏），视频每帧将被嵌入场景模板的背景图中，输出合成视频", "hint"))
+        fvi.addWidget(_btn("选择视频文件…", self._pick_video_files, "scan"))
+        c1_video.hide(); fv.addWidget(c1_video)
+
+        self._c1_folder = c1_folder
+        self._c1_image  = c1_image
+        self._c1_video  = c1_video
+
+        fv.addSpacing(16); fv.addWidget(_sep()); fv.addSpacing(14)
+
+        # Output settings section
+        fv.addWidget(_lbl("输出设置", "h2"))
+        fv.addSpacing(10)
+        self.output_dir_edit = QLineEdit(); self.output_dir_edit.setReadOnly(True)
+        self.output_dir_edit.setPlaceholderText("选择输出文件夹…")
+        fv.addLayout(_row(self.output_dir_edit, _btn("选择", self._browse_output, w=64), spacing=6))
+        fv.addSpacing(8)
+
+        self.format_combo = QComboBox(); self.format_combo.addItems(["PNG", "JPEG"])
+        self.format_combo.setFixedWidth(86)
+        self._format_row_widget = QWidget(); self._fix_bg(self._format_row_widget, _SIDE)
+        frw_layout = QHBoxLayout(self._format_row_widget)
+        frw_layout.setContentsMargins(0, 0, 0, 0); frw_layout.setSpacing(8)
+        frw_layout.addWidget(_lbl("图片格式:", "hint"))
+        frw_layout.addWidget(self.format_combo)
+        frw_layout.addWidget(_lbl("（输出尺寸使用模板中配置的规格）", "hint"))
+        frw_layout.addStretch()
+        fv.addWidget(self._format_row_widget)
+        fv.addStretch()
+
+        ls_scroll.setWidget(ls_form)
+        lsv.addWidget(ls_scroll)
+
+        # Fixed bottom: progress + run/abort
+        ls_bottom = QWidget(); self._fix_bg(ls_bottom, _SIDE)
+        self._mark_styled_bg(ls_bottom, "editor_bottom")
+        lbv = QVBoxLayout(ls_bottom); lbv.setContentsMargins(14, 8, 14, 12); lbv.setSpacing(6)
+        lbv.addWidget(_sep()); lbv.addSpacing(4)
+        self.progress_bar = QProgressBar(); self.progress_bar.setVisible(False)
+        lbv.addWidget(self.progress_bar)
+        self.progress_label = _lbl("", "hint")
+        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbv.addWidget(self.progress_label)
+        self.btn_run = _btn("  ▶   开始合成", self._run_batch, "primary")
+        self.btn_run.setFixedHeight(48)
+        self.btn_abort = _btn("  停止", self._abort_batch, "danger")
+        self.btn_abort.setFixedHeight(48); self.btn_abort.setVisible(False)
+        lbv.addLayout(_row(self.btn_run, self.btn_abort))
+        lsv.addWidget(ls_bottom)
+
+        main_hl.addWidget(left_side)
+
+        # ── Right panel (template / file assignment, fills remaining width) ──
+        right_scroll = QScrollArea(); right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._fix_bg(right_scroll, _WIN); self._fix_bg(right_scroll.viewport(), _WIN)
+        self._mark_styled_bg(right_scroll.viewport(), "batch_viewport")
+        right_body = QWidget(); self._fix_bg(right_body, _WIN)
+        self._mark_styled_bg(right_body, "batch_scroll_body")
+        rlv = QVBoxLayout(right_body)
+        rlv.setContentsMargins(20, 20, 20, 20); rlv.setSpacing(12)
+
+        # Template assignment card (folder / image modes)
+        self._c2_title = _lbl("选择场景模板", "step_t")
+        _badge2 = _lbl("2", "step_n"); _badge2.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        c2 = _card(_row(_badge2, 4, self._c2_title, None))
+        self._c2_hint = _lbl("每行可独立选择多个模板 — 点击「选择模板」按钮切换。「全部应用」可快速统一设置所有行。", "hint")
+        self._c2_hint.setWordWrap(True)
+        c2.layout().addWidget(self._c2_hint)
+        btn_qa = _btn("全部应用…", self._apply_all, "scan")
+        c2.layout().addLayout(_row(btn_qa, None))
+
+        self.subfolder_table = QTableWidget(0, 3)
+        self.subfolder_table.setHorizontalHeaderLabels(["子文件夹 / 图片组", "图片数", "已选模板（点击修改）"])
+        hh = self.subfolder_table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.subfolder_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.subfolder_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.subfolder_table.verticalHeader().setVisible(False)
+        self.subfolder_table.setMinimumHeight(200)
+        self.subfolder_table.setStyleSheet(f"QTableWidget::item:selected {{ background: rgba(7,193,96,0.18); color:{_TEXT}; }}")
+        tbl_wrap = QWidget(); tbl_wrap.setObjectName("inset")
+        tw = QVBoxLayout(tbl_wrap); tw.setContentsMargins(0, 0, 0, 0)
+        tw.addWidget(self.subfolder_table)
+        c2.layout().addWidget(tbl_wrap)
+        rlv.addWidget(c2)
+        self._c2 = c2
+
+        # Video table card (video mode, right panel)
+        c_video_right = _card(_step("2", "视频与模板"))
+        c_video_right.layout().addWidget(_lbl("每行选择要嵌入的场景模板", "hint"))
         self.video_table = QTableWidget(0, 3)
         self.video_table.setHorizontalHeaderLabels(["视频文件（每帧作为 PPT 内容嵌入场景）", "时长/帧数", "场景模板"])
         vh = self.video_table.horizontalHeader()
@@ -805,91 +897,20 @@ class MainWindow(QMainWindow):
         self.video_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.video_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.video_table.verticalHeader().setVisible(False)
-        self.video_table.setMinimumHeight(160)
+        self.video_table.setMinimumHeight(200)
         self.video_table.setStyleSheet(f"QTableWidget::item:selected {{ background: rgba(7,193,96,0.18); color:{_TEXT}; }}")
         vid_wrap = QWidget(); vid_wrap.setObjectName("inset")
-        vw = QVBoxLayout(vid_wrap); vw.setContentsMargins(0,0,0,0); vw.addWidget(self.video_table)
-        c1_video.layout().addWidget(vid_wrap)
-        c1_video.hide()
-        lv.addWidget(c1_video)
-        self._video_row_selections = {}  # row → [tpl_names]
+        vw = QVBoxLayout(vid_wrap); vw.setContentsMargins(0, 0, 0, 0); vw.addWidget(self.video_table)
+        c_video_right.layout().addWidget(vid_wrap)
+        c_video_right.hide()
+        rlv.addWidget(c_video_right)
+        self._c_video_right = c_video_right
+        self._video_row_selections = {}
 
-        # Store references for show/hide
-        self._c1_folder = c1_folder
-        self._c1_image = c1_image
-        self._c1_video = c1_video
+        rlv.addStretch()
+        right_scroll.setWidget(right_body)
+        main_hl.addWidget(right_scroll, 1)
 
-        # Step 2 — title label stored so _set_batch_mode can update text per mode
-        self._c2_title = _lbl("选择场景模板", "step_t")
-        _badge2 = _lbl("2", "step_n"); _badge2.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        c2 = _card(_row(_badge2, 4, self._c2_title, None))
-        self._c2_hint = _lbl("每行可独立选择多个模板 — 点击「选择模板」按钮切换。「全部应用」可快速统一设置所有行。", "hint")
-        self._c2_hint.setWordWrap(True)
-        c2.layout().addWidget(self._c2_hint)
-
-        btn_qa = _btn("全部应用…", self._apply_all, "scan")
-        c2.layout().addLayout(_row(btn_qa, None))
-
-        self.subfolder_table = QTableWidget(0, 3)
-        self.subfolder_table.setHorizontalHeaderLabels(["子文件夹", "图片数", "已选模板（点击修改）"])
-        hh = self.subfolder_table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.subfolder_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.subfolder_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.subfolder_table.verticalHeader().setVisible(False)
-        self.subfolder_table.setMinimumHeight(180)
-        self.subfolder_table.setRowHeight(0, 44)
-        self.subfolder_table.setStyleSheet(f"QTableWidget::item:selected {{ background: rgba(7,193,96,0.18); color:{_TEXT}; }}")
-
-        tbl_wrap = QWidget(); tbl_wrap.setObjectName("inset")
-        tw = QVBoxLayout(tbl_wrap); tw.setContentsMargins(0,0,0,0)
-        tw.addWidget(self.subfolder_table)
-        c2.layout().addWidget(tbl_wrap)
-        lv.addWidget(c2)
-        self._c2 = c2
-
-        # Step 3
-        c3 = _card(_step("3", "输出设置"))
-        self.output_dir_edit = QLineEdit(); self.output_dir_edit.setReadOnly(True)
-        self.output_dir_edit.setPlaceholderText("选择输出文件夹…")
-        c3.layout().addLayout(_row(self.output_dir_edit, _btn("选择", self._browse_output, w=64), spacing=6))
-
-        # Format selector (hidden in video mode; size comes from template)
-        self.format_combo = QComboBox(); self.format_combo.addItems(["PNG", "JPEG"])
-        self.format_combo.setFixedWidth(86)
-        self._format_row_widget = QWidget()
-        frw_layout = QHBoxLayout(self._format_row_widget)
-        frw_layout.setContentsMargins(0, 0, 0, 0); frw_layout.setSpacing(8)
-        frw_layout.addWidget(_lbl("图片格式:", "hint"))
-        frw_layout.addWidget(self.format_combo)
-        frw_layout.addWidget(_lbl("（输出尺寸使用模板中配置的规格）", "hint"))
-        frw_layout.addStretch()
-        c3.layout().addWidget(self._format_row_widget)
-        lv.addWidget(c3)
-
-        # Progress
-        self.progress_bar = QProgressBar(); self.progress_bar.setVisible(False)
-        lv.addWidget(self.progress_bar)
-        self.progress_label = _lbl("", "hint")
-        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lv.addWidget(self.progress_label)
-
-        # Run / Abort
-        self.btn_run = _btn("  ▶   开始合成", self._run_batch, "primary")
-        self.btn_run.setFixedHeight(48)
-        self.btn_abort = _btn("  停止", self._abort_batch, "danger")
-        self.btn_abort.setFixedHeight(48)
-        self.btn_abort.setVisible(False)
-        lv.addLayout(_row(self.btn_run, self.btn_abort))
-        lv.addStretch()
-
-        outer = QWidget()
-        self._fix_bg(outer, _WIN)
-        self._mark_styled_bg(outer, "batch_outer")
-        ol = QVBoxLayout(outer); ol.setContentsMargins(0,0,0,0)
-        ol.addWidget(scroll)
         return outer
 
     # ── Settings tab ──────────────────────────────────────────────────────────
@@ -1070,6 +1091,7 @@ class MainWindow(QMainWindow):
         self._c1_image.setVisible(idx == 1)
         self._c1_video.setVisible(idx == 2)
         self._c2.setVisible(idx != 2)
+        self._c_video_right.setVisible(idx == 2)
         self._format_row_widget.setVisible(idx != 2)  # no format selector for video
         # Update step 2 title/hint to match current mode
         self._c2_title.setText("选择场景模板")
