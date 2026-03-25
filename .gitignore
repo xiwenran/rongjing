@@ -18,6 +18,9 @@ __pycache__/
 # Claude 项目开发笔记（内部用，不上传）
 CLAUDE.md
 
+# 自动生成的构建信息（每次 commit 都变，不需要追踪）
+_build_info.py
+
 # 编辑器
 .vscode/
 *.swp
