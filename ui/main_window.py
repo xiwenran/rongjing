@@ -428,15 +428,22 @@ class TemplatePickerDialog(QDialog):
 
 
 def _set_green_selection(table_widget):
-    """Force green selection color via QPalette (overrides macOS system blue)."""
+    """Force green selection color on macOS (Aqua style ignores stylesheet ::item:selected).
+    Must set palette on BOTH the table widget AND its viewport."""
     from PyQt6.QtGui import QPalette, QColor as _QC
-    pal = table_widget.palette()
     green = _QC(7, 193, 96, 55)
     text  = _QC(25, 25, 25)
-    for grp in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
-        pal.setColor(grp, QPalette.ColorRole.Highlight, green)
-        pal.setColor(grp, QPalette.ColorRole.HighlightedText, text)
-    table_widget.setPalette(pal)
+    for w in (table_widget, table_widget.viewport()):
+        pal = w.palette()
+        for grp in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive,
+                    QPalette.ColorGroup.Normal):
+            pal.setColor(grp, QPalette.ColorRole.Highlight, green)
+            pal.setColor(grp, QPalette.ColorRole.HighlightedText, text)
+        w.setPalette(pal)
+        w.setAutoFillBackground(True)
+    table_widget.setStyleSheet(
+        "QTableView::item:selected { background: rgba(7,193,96,0.20); color: #191919; }"
+    )
 
 def _card(*items, pad=(20,18,20,18)) -> QWidget:
     w = QWidget(); w.setObjectName("card")
@@ -1160,7 +1167,7 @@ class MainWindow(QMainWindow):
             QPushButton {{
                 background: {_INPUT}; color: {_TEXT};
                 border: 1px solid {_SEP}; border-radius: 6px;
-                padding: 8px 12px; font-size: 13px;
+                padding: 6px 8px; font-size: 13px;
                 text-align: left;
             }}
             QPushButton:hover {{ background: #E5E5E5; }}
@@ -1200,7 +1207,7 @@ class MainWindow(QMainWindow):
             QPushButton {{
                 background: {_INPUT}; color: {_TEXT};
                 border: 1px solid {_SEP}; border-radius: 6px;
-                padding: 8px 12px; font-size: 13px;
+                padding: 6px 8px; font-size: 13px;
                 text-align: left;
             }}
             QPushButton:hover {{ background: #E5E5E5; }}
