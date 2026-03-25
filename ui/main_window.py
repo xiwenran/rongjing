@@ -8,9 +8,9 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QComboBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QProgressBar, QFormLayout, QSpinBox,
     QAbstractItemView, QFrame, QScrollArea, QDialog, QCheckBox, QDialogButtonBox,
-    QSizePolicy,
+    QSizePolicy, QMenu, QWidgetAction,
 )
-from PyQt6.QtCore import Qt, QSize, QSettings
+from PyQt6.QtCore import Qt, QSize, QSettings, QPoint
 from PyQt6.QtGui import QFont, QColor
 
 from models.template_model import Template, TemplateManager
@@ -214,6 +214,36 @@ QScrollBar::add-page,  QScrollBar::sub-page  {{ background: transparent; }}
 /* ── Separators ── */
 QFrame[frameShape="4"] {{ color: {_SEP}; max-height: 1px; }}
 QFrame[frameShape="5"] {{ color: {_SEP}; max-width:  1px; }}
+
+/* ── Left nav sidebar ── */
+QWidget#navSidebar {{
+    background: {_CARD}; border-right: 1px solid {_SEP};
+    min-width: 160px; max-width: 160px;
+}}
+QPushButton#navBtn {{
+    background: transparent; color: {_TEXT2};
+    border: none; border-radius: 10px;
+    padding: 12px 16px; font-size: 13px; font-weight: 500;
+    text-align: left;
+}}
+QPushButton#navBtn:hover {{ background: {_INPUT}; color: {_TEXT}; }}
+
+/* ── Mode Radio Cards ── */
+QWidget#modeCard {{
+    background: {_CARD}; border: 2px solid {_SEP};
+    border-radius: 14px;
+}}
+QWidget#modeCard[selected="true"] {{
+    background: rgba(7,193,96,0.06);
+    border: 2px solid {_GREEN};
+}}
+
+/* ── QMenu popup ── */
+QMenu {{
+    background: {_CARD}; border: 1px solid {_SEP};
+    border-radius: 10px; padding: 4px;
+}}
+QMenu::item {{ padding: 0; background: transparent; }}
 """
 
 OUTPUT_PRESETS = {
@@ -469,27 +499,47 @@ class MainWindow(QMainWindow):
         self._fix_bg(root, _WIN)
         self._mark_styled_bg(root, "root_bg")
 
-        lv = QVBoxLayout(root)
-        lv.setContentsMargins(0, 0, 0, 0); lv.setSpacing(0)
+        # Root is now horizontal: [navSidebar | stack]
+        rl = QHBoxLayout(root)
+        rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(0)
 
-        # ── Custom nav header (replaces QTabWidget to avoid Windows black filler) ──
-        nav = QWidget(); nav.setObjectName("navHeader")
+        # ── Left nav sidebar ────────────────────────────────────────────────
+        nav = QWidget(); nav.setObjectName("navSidebar")
         self._fix_bg(nav, _CARD)
-        nh = QHBoxLayout(nav)
-        nh.setContentsMargins(16, 0, 16, 0); nh.setSpacing(0)
+        nav.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        nv = QVBoxLayout(nav)
+        nv.setContentsMargins(12, 16, 12, 16); nv.setSpacing(4)
+
+        # App title
+        app_title = QLabel("融景")
+        app_title.setStyleSheet(f"font-size:18px; font-weight:700; color:{_TEXT}; padding:8px 8px 16px 8px;")
+        nv.addWidget(app_title)
 
         self._nav_btns = []
-        for i, label in enumerate(["模板配置", "批量导出"]):
-            btn = QPushButton(label)
+        nav_items = [("  📐  模板配置", 0), ("  📦  批量导出", 1)]
+        for label_text, idx in nav_items:
+            btn = QPushButton(label_text)
+            btn.setObjectName("navBtn")
             btn.setCheckable(True)
-            btn.setFixedHeight(48)
+            btn.setFixedHeight(44)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(lambda checked, idx=i: self._switch_page(idx))
+            btn.clicked.connect(lambda checked, i=idx: self._switch_page(i))
             self._nav_btns.append(btn)
-            nh.addWidget(btn)
-        nh.addStretch()   # stretch fills remaining header width — no black gap possible
+            nv.addWidget(btn)
 
-        lv.addWidget(nav)
+        nv.addStretch()
+
+        # Settings button at bottom
+        btn_settings = QPushButton("  ⚙  设置")
+        btn_settings.setObjectName("navBtn")
+        btn_settings.setCheckable(True)
+        btn_settings.setFixedHeight(44)
+        btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_settings.clicked.connect(lambda: self._switch_page(2))
+        self._nav_btns.append(btn_settings)
+        nv.addWidget(btn_settings)
+
+        rl.addWidget(nav)
 
         # ── Page stack ────────────────────────────────────────────────────────
         self.stack = QStackedWidget()
@@ -497,7 +547,8 @@ class MainWindow(QMainWindow):
         self._mark_styled_bg(self.stack, "pageStack")
         self.stack.addWidget(self._build_editor_tab())
         self.stack.addWidget(self._build_batch_tab())
-        lv.addWidget(self.stack)
+        self.stack.addWidget(self._build_settings_tab())
+        rl.addWidget(self.stack, 1)
 
         self._switch_page(0)
 
@@ -505,8 +556,8 @@ class MainWindow(QMainWindow):
 
     def _switch_page(self, idx: int):
         self.stack.setCurrentIndex(idx)
-        active   = f"QPushButton{{background:transparent;color:{_GREEN};font-weight:600;font-size:13px;border:none;border-bottom:2px solid {_GREEN};border-radius:0;padding:0 20px;}}"
-        inactive = f"QPushButton{{background:transparent;color:{_TEXT2};font-size:13px;font-weight:500;border:none;border-bottom:2px solid transparent;border-radius:0;padding:0 20px;}} QPushButton:hover{{color:{_TEXT};}}"
+        active   = f"QPushButton{{background:{_GREEN};color:white;font-weight:600;font-size:13px;border:none;border-radius:10px;padding:12px 16px;text-align:left;}}"
+        inactive = f"QPushButton{{background:transparent;color:{_TEXT2};font-size:13px;font-weight:500;border:none;border-radius:10px;padding:12px 16px;text-align:left;}} QPushButton:hover{{background:{_INPUT};color:{_TEXT};}}"
         for i, btn in enumerate(self._nav_btns):
             btn.setChecked(i == idx)
             btn.setStyleSheet(active if i == idx else inactive)
@@ -647,13 +698,6 @@ class MainWindow(QMainWindow):
         btn_save = _btn("  保存模板", self._save_template, "primary")
         btn_save.setFixedHeight(44)
         bv.addWidget(btn_save)
-        bv.addSpacing(10)
-        bv.addWidget(_sep())
-        bv.addSpacing(8)
-        uninstall_btn = QPushButton("清除所有数据（卸载前使用）")
-        uninstall_btn.setObjectName("danger")
-        uninstall_btn.clicked.connect(self._uninstall_data)
-        bv.addWidget(uninstall_btn)
         bv.addSpacing(4)
 
         sv.addWidget(bottom)
@@ -692,16 +736,31 @@ class MainWindow(QMainWindow):
         h_center.addStretch(); h_center.addWidget(content); h_center.addStretch()
         body_lv.addLayout(h_center); body_lv.addStretch()
 
-        # Mode selector — full-width pill tabs
-        mode_row = QHBoxLayout(); mode_row.setSpacing(8)
-        self._mode_btns = []
-        for i, label in enumerate(["📁  图片文件夹", "🖼  图片批量", "🎬  视频文件"]):
-            b = QPushButton(label)
-            b.setCheckable(True); b.setChecked(i == 0)
-            b.setObjectName("modeBtn"); b.setFixedHeight(44)
-            b.clicked.connect(lambda checked, idx=i: self._set_batch_mode(idx))
-            self._mode_btns.append(b)
-            mode_row.addWidget(b)
+        # Mode selector — Radio Cards
+        mode_row = QHBoxLayout(); mode_row.setSpacing(10)
+        self._mode_cards = []
+        mode_data = [
+            ("📁", "图片文件夹", "按子文件夹分组\n批量处理"),
+            ("🖼", "图片批量", "手动选多图\n统一应用模板"),
+            ("🎬", "视频文件", "视频逐帧嵌入\n输出合成视频"),
+        ]
+        for i, (icon, title, desc) in enumerate(mode_data):
+            card = QWidget(); card.setObjectName("modeCard")
+            card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            card.setCursor(Qt.CursorShape.PointingHandCursor)
+            cv = QVBoxLayout(card); cv.setContentsMargins(14, 14, 14, 14); cv.setSpacing(4)
+            lbl_icon = QLabel(icon); lbl_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl_icon.setStyleSheet("font-size:28px; background:transparent;")
+            lbl_title = QLabel(title); lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl_title.setStyleSheet(f"font-size:13px; font-weight:700; color:{_TEXT}; background:transparent;")
+            lbl_desc = QLabel(desc); lbl_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl_desc.setStyleSheet(f"font-size:11px; color:{_TEXT2}; background:transparent;")
+            lbl_desc.setWordWrap(True)
+            cv.addWidget(lbl_icon); cv.addWidget(lbl_title); cv.addWidget(lbl_desc)
+            idx_capture = i
+            card.mousePressEvent = lambda e, idx=idx_capture: self._set_batch_mode(idx)
+            self._mode_cards.append(card)
+            mode_row.addWidget(card)
         lv.addLayout(mode_row)
         self._batch_mode = 0
 
@@ -832,6 +891,38 @@ class MainWindow(QMainWindow):
         ol = QVBoxLayout(outer); ol.setContentsMargins(0,0,0,0)
         ol.addWidget(scroll)
         return outer
+
+    # ── Settings tab ──────────────────────────────────────────────────────────
+
+    def _build_settings_tab(self):
+        page = QWidget()
+        self._fix_bg(page, _WIN)
+        self._mark_styled_bg(page, "batch_outer")
+        lv = QVBoxLayout(page)
+        lv.setContentsMargins(40, 40, 40, 40); lv.setSpacing(16)
+
+        title = QLabel("设置")
+        title.setStyleSheet(f"font-size:22px; font-weight:700; color:{_TEXT};")
+        lv.addWidget(title)
+
+        # App info card
+        info_card = _card(_lbl("关于融景", "h2"))
+        info_card.layout().addWidget(_lbl("将 PPT 截图通过透视变换嵌入实拍背景图，批量生成合成图片或视频。", "hint"))
+        info_card.layout().addSpacing(4)
+        lv.addWidget(info_card)
+
+        # Data management card
+        data_card = _card(_lbl("数据管理", "h2"))
+        data_card.layout().addWidget(_lbl("清除所有模板数据，用于卸载前清理本地存储。", "hint"))
+        data_card.layout().addSpacing(8)
+        btn_uninstall = QPushButton("清除所有数据（卸载前使用）")
+        btn_uninstall.setObjectName("danger")
+        btn_uninstall.clicked.connect(self._uninstall_data)
+        data_card.layout().addWidget(btn_uninstall)
+        lv.addWidget(data_card)
+
+        lv.addStretch()
+        return page
 
     # ── Template management ───────────────────────────────────────────────────
 
@@ -971,12 +1062,10 @@ class MainWindow(QMainWindow):
 
     def _set_batch_mode(self, idx: int):
         self._batch_mode = idx
-        for i, b in enumerate(self._mode_btns):
-            b.setChecked(i == idx)
-            if i == idx:
-                b.setStyleSheet(f"QPushButton {{ background:{_GREEN}; color:white; font-weight:600; font-size:14px; border:none; border-radius:22px; padding:10px 0; }}")
-            else:
-                b.setStyleSheet(f"QPushButton {{ background:{_INPUT}; color:{_TEXT2}; font-size:14px; font-weight:500; border:none; border-radius:22px; padding:10px 0; }} QPushButton:hover {{ background:#E8E8E8; color:{_TEXT}; }}")
+        for i, card in enumerate(self._mode_cards):
+            card.setProperty("selected", i == idx)
+            card.style().unpolish(card)
+            card.style().polish(card)
         self._c1_folder.setVisible(idx == 0)
         self._c1_image.setVisible(idx == 1)
         self._c1_video.setVisible(idx == 2)
@@ -1011,8 +1100,10 @@ class MainWindow(QMainWindow):
     def _make_tpl_btn(self, row: int, selected_names: list) -> QPushButton:
         """Create a template-picker button for a table row."""
         def label():
-            n = len(self._row_selections.get(row, []))
-            return f"选择模板…" if n == 0 else f"{n} 个模板 ▾"
+            sel = self._row_selections.get(row, [])
+            if not sel: return "选择模板 ▾"
+            text = "、".join(sel)
+            return (text[:18] + "… ▾") if len(text) > 18 else (text + " ▾")
 
         btn = QPushButton(label())
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1028,11 +1119,28 @@ class MainWindow(QMainWindow):
 
         def open_picker():
             templates = self.tm.load_all()
+            if not templates:
+                QMessageBox.warning(self, "提示", "请先在「模板配置」中创建并保存场景模板"); return
             current = self._row_selections.get(row, [])
-            dlg = TemplatePickerDialog(templates, current, self)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._row_selections[row] = dlg.selected_names()
-                btn.setText(label())
+            menu = QMenu(btn)
+            menu.setStyleSheet(f"""
+                QMenu {{ background:{_CARD}; border:1px solid {_SEP}; border-radius:10px; padding:4px; }}
+                QMenu::item {{ padding:0; background:transparent; }}
+                QCheckBox {{ padding:8px 14px; font-size:13px; color:{_TEXT}; background:transparent; spacing:8px; }}
+                QCheckBox::indicator {{ width:16px; height:16px; border-radius:4px; border:2px solid {_SEP}; background:{_CARD}; }}
+                QCheckBox::indicator:checked {{ background:{_GREEN}; border-color:{_GREEN}; }}
+            """)
+            checkboxes = []
+            for tpl in templates:
+                cb = QCheckBox(tpl.name)
+                cb.setChecked(tpl.name in current)
+                wa = QWidgetAction(menu)
+                wa.setDefaultWidget(cb)
+                menu.addAction(wa)
+                checkboxes.append(cb)
+            menu.exec(btn.mapToGlobal(QPoint(0, btn.height())))
+            self._row_selections[row] = [cb.text() for cb in checkboxes if cb.isChecked()]
+            btn.setText(label())
 
         btn.clicked.connect(open_picker)
         self._row_selections[row] = list(selected_names)
@@ -1042,8 +1150,10 @@ class MainWindow(QMainWindow):
     def _make_video_tpl_btn(self, row: int, selected_names: list) -> QPushButton:
         """Create a template-picker button for a video table row."""
         def label():
-            n = len(self._video_row_selections.get(row, []))
-            return "选择模板…" if n == 0 else f"{n} 个模板 ▾"
+            sel = self._video_row_selections.get(row, [])
+            if not sel: return "选择模板 ▾"
+            text = "、".join(sel)
+            return (text[:18] + "… ▾") if len(text) > 18 else (text + " ▾")
         btn = QPushButton(label())
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         btn.setStyleSheet(f"""
@@ -1057,11 +1167,28 @@ class MainWindow(QMainWindow):
         """)
         def open_picker():
             templates = self.tm.load_all()
+            if not templates:
+                QMessageBox.warning(self, "提示", "请先在「模板配置」中创建并保存场景模板"); return
             current = self._video_row_selections.get(row, [])
-            dlg = TemplatePickerDialog(templates, current, self)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._video_row_selections[row] = dlg.selected_names()
-                btn.setText(label())
+            menu = QMenu(btn)
+            menu.setStyleSheet(f"""
+                QMenu {{ background:{_CARD}; border:1px solid {_SEP}; border-radius:10px; padding:4px; }}
+                QMenu::item {{ padding:0; background:transparent; }}
+                QCheckBox {{ padding:8px 14px; font-size:13px; color:{_TEXT}; background:transparent; spacing:8px; }}
+                QCheckBox::indicator {{ width:16px; height:16px; border-radius:4px; border:2px solid {_SEP}; background:{_CARD}; }}
+                QCheckBox::indicator:checked {{ background:{_GREEN}; border-color:{_GREEN}; }}
+            """)
+            checkboxes = []
+            for tpl in templates:
+                cb = QCheckBox(tpl.name)
+                cb.setChecked(tpl.name in current)
+                wa = QWidgetAction(menu)
+                wa.setDefaultWidget(cb)
+                menu.addAction(wa)
+                checkboxes.append(cb)
+            menu.exec(btn.mapToGlobal(QPoint(0, btn.height())))
+            self._video_row_selections[row] = [cb.text() for cb in checkboxes if cb.isChecked()]
+            btn.setText(label())
         btn.clicked.connect(open_picker)
         self._video_row_selections[row] = list(selected_names)
         btn.setText(label())
