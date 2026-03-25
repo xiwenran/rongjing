@@ -435,7 +435,7 @@ def _set_green_selection(table_widget):
     if fusion:
         table_widget.setStyle(fusion)
         table_widget.viewport().setStyle(fusion)
-    green = QColor(7, 193, 96, 60)
+    green = QColor(7, 193, 96, 100)
     text  = QColor(25, 25, 25)
     for w in (table_widget, table_widget.viewport()):
         pal = w.palette()
@@ -908,7 +908,6 @@ class MainWindow(QMainWindow):
         self.subfolder_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.subfolder_table.verticalHeader().setVisible(False)
         self.subfolder_table.setMinimumHeight(200)
-        self.subfolder_table.setStyleSheet(f"QTableWidget::item:selected {{ background: rgba(7,193,96,0.18); color:{_TEXT}; }}")
         _set_green_selection(self.subfolder_table)
         tbl_wrap = QWidget(); tbl_wrap.setObjectName("inset")
         tw = QVBoxLayout(tbl_wrap); tw.setContentsMargins(0, 0, 0, 0)
@@ -930,7 +929,6 @@ class MainWindow(QMainWindow):
         self.video_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.video_table.verticalHeader().setVisible(False)
         self.video_table.setMinimumHeight(200)
-        self.video_table.setStyleSheet(f"QTableWidget::item:selected {{ background: rgba(7,193,96,0.18); color:{_TEXT}; }}")
         _set_green_selection(self.video_table)
         vid_wrap = QWidget(); vid_wrap.setObjectName("inset")
         vw = QVBoxLayout(vid_wrap); vw.setContentsMargins(0, 0, 0, 0); vw.addWidget(self.video_table)
