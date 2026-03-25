@@ -1110,7 +1110,8 @@ class MainWindow(QMainWindow):
         templates = self.tm.load_all()
         if not templates:
             QMessageBox.warning(self, "提示", "暂无模板"); return
-        dlg = TemplatePickerDialog(templates, [], self)
+        current = self._row_selections.get(0, [])
+        dlg = TemplatePickerDialog(templates, current, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         names = dlg.selected_names()
