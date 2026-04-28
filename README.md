@@ -104,3 +104,58 @@
 ---
 
 *Made with PyQt6 + Pillow + PyAV*
+
+---
+
+## 命令行工具（CLI）
+
+除图形界面外，融景提供 `cli.py` 支持无界面批量处理，可由 Claude Code 等 AI 工具直接调用。
+
+### 依赖
+
+```bash
+pip install Pillow numpy
+```
+
+### 列出可用模板
+
+```bash
+python3 cli.py list-templates
+```
+
+输出 JSON，包含模板名称与背景图路径。
+
+### 批量合成图片
+
+```bash
+python3 cli.py process \
+  --input <文件夹或图片路径...> \
+  --templates <模板名...> \
+  --output <输出目录> \
+  --format JPEG   # 或 PNG
+```
+
+**示例**：用模板 1、2、3 处理某文件夹下所有图片：
+
+```bash
+python3 cli.py process \
+  --input ~/Desktop/ppt截图/ \
+  --templates 1 2 3 \
+  --output ~/Desktop/合成结果/
+```
+
+**输出结构**：`输出目录 / 模板名 / 1.jpg, 2.jpg, ...`
+
+### 注意
+
+- 视频合成仅支持图形界面（需要 PyAV + QThread）
+- 新建/编辑模板须在融景 App 内完成（需要可视化标注角点）
+- 模板文件存储于 `~/Library/Application Support/融景/templates/`
+
+---
+
+## Claude Code Skill
+
+已提供 `rongjing` Skill（`~/.claude/skills/rongjing/SKILL.md`），在 Claude Code 中可直接用自然语言触发批量合成：
+
+> 「用模板1到5，把桌面上的图片文件夹合成，输出到Downloads」
