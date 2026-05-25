@@ -2,7 +2,7 @@ import os
 import random
 import re
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from fractions import Fraction
 from typing import List, Optional, Tuple
 
@@ -57,6 +57,8 @@ class BatchRunner(QThread):
 
     def run(self):
         try:
+            # Match VideoRunner's worker cap: use CPU cores, but keep I/O and UI responsive.
+            num_workers = max(1, min(6, (os.cpu_count() or 2) - 1))
             os.makedirs(self.output_dir, exist_ok=True)
 
             total = sum(len(files) * len(templates) for _, files, templates in self.tasks)
@@ -77,18 +79,27 @@ class BatchRunner(QThread):
                     )
 
                     # Precompute mask + bg array once per template (shared across all files)
-                    bg_img = Image.open(template.background_path)
-                    cache = precompute_template_cache(bg_img, template.screen_points)
+                    ppt_size = None
+                    if files:
+                        with Image.open(files[0]) as first_img:
+                            ppt_size = first_img.size
+                    with Image.open(template.background_path) as bg_img:
+                        cache = precompute_template_cache(
+                            bg_img, template.screen_points, ppt_size=ppt_size
+                        )
 
-                    for i, img_path in enumerate(files, 1):
+                    def _process_one_image(i: int, img_path: str):
                         if self._abort:
-                            self.finished.emit(False, "已取消"); return
+                            raise RuntimeError("已取消")
 
                         ext = ".jpg" if self.output_format == "JPEG" else ".png"
                         out_path = os.path.join(out_sub, f"{i}{ext}")
 
-                        ppt_img = Image.open(img_path)
-                        result = embed_image_pil_fast(ppt_img, cache)
+                        with Image.open(img_path) as ppt_img:
+                            result = embed_image_pil_fast(ppt_img, cache)
+
+                        if self._abort:
+                            raise RuntimeError("已取消")
 
                         if output_size:
                             result = result.resize(output_size, Image.LANCZOS)
@@ -99,6 +110,9 @@ class BatchRunner(QThread):
 
                             seed = hash((self._diversify_run_seed, template.name, group_name, i))
                             result = diversify_image(result, self.diversify_config, seed=seed)
+
+                        if self._abort:
+                            raise RuntimeError("已取消")
 
                         if self.output_format == "JPEG":
                             quality = 95
@@ -114,8 +128,31 @@ class BatchRunner(QThread):
                         else:
                             result.save(out_path, "PNG")
 
-                        done += 1
-                        self.progress.emit(done, total, f"{group_name}/{template.name}/{i}{ext}")
+                        return i, ext
+
+                    futures = []
+                    with ThreadPoolExecutor(max_workers=num_workers) as pool:
+                        for i, img_path in enumerate(files, 1):
+                            if self._abort:
+                                self.finished.emit(False, "已取消"); return
+                            futures.append(pool.submit(_process_one_image, i, img_path))
+
+                        for fut in as_completed(futures):
+                            if self._abort:
+                                for pending in futures:
+                                    pending.cancel()
+                                self.finished.emit(False, "已取消"); return
+                            try:
+                                i, ext = fut.result()
+                            except Exception as exc:
+                                if self._abort or str(exc) == "已取消":
+                                    for pending in futures:
+                                        pending.cancel()
+                                    self.finished.emit(False, "已取消"); return
+                                raise
+
+                            done += 1
+                            self.progress.emit(done, total, f"{group_name}/{template.name}/{i}{ext}")
 
             self.finished.emit(True, f"完成！共处理 {done} 张图片")
 

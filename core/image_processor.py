@@ -143,26 +143,24 @@ def embed_image_pil_fast(ppt_img: Image.Image, cache: dict) -> Image.Image:
     Uses BILINEAR interpolation and RGB processing (3 channels) for maximum
     speed. Returns an RGB image.
 
-    Coefficients are lazily cached inside `cache` keyed by ppt image size.
-    When ppt_size was passed to precompute_template_cache (video case), the
-    cache is fully read-only here and safe for concurrent use in a thread pool.
+    Uses precomputed coefficients when they match the current source size.
+    Mismatched sizes compute local coefficients without writing to `cache`,
+    so a shared cache remains safe for concurrent use in a thread pool.
     """
     ppt_img = ppt_img.convert("RGB")   # 3 channels — faster transform & blend
     ppt_w, ppt_h = ppt_img.size
 
-    # Lazily cache perspective coefficients per source resolution.
-    # For video (ppt_size pre-computed) this branch is never entered.
     size_key = (ppt_w, ppt_h)
-    if cache.get("_coeffs_key") != size_key:
+    coeffs = cache.get("_coeffs") if cache.get("_coeffs_key") == size_key else None
+    if coeffs is None:
         src_pts = np.float64([[0, 0], [ppt_w, 0], [ppt_w, ppt_h], [0, ppt_h]])
-        cache["_coeffs"]     = _perspective_coeffs(src_pts, cache["dst_pts"])
-        cache["_coeffs_key"] = size_key
+        coeffs = _perspective_coeffs(src_pts, cache["dst_pts"])
 
     bg_w, bg_h = cache["bg_size"]
     # BILINEAR is ~2-3× faster than BICUBIC; for screen content the quality
     # difference is imperceptible after perspective distortion.
     warped = ppt_img.transform(
-        (bg_w, bg_h), Image.PERSPECTIVE, cache["_coeffs"], Image.BILINEAR
+        (bg_w, bg_h), Image.PERSPECTIVE, coeffs, Image.BILINEAR
     )
 
     warped_arr = np.array(warped, dtype=np.float32)
