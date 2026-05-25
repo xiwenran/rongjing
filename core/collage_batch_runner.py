@@ -20,7 +20,7 @@ class CollageBatchRunner(QThread):
         image_files: List[str],
         collage_template: CollageTemplate,
         output_dir: str,
-        output_format: str = "PNG",
+        output_format: str = "JPEG",
         total_output_images: int = 0,
         excluded_indices: Optional[Set[int]] = None,
         diversify_config: Optional[DiversifyConfig] = None,

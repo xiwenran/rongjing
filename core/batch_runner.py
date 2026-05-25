@@ -40,7 +40,7 @@ class BatchRunner(QThread):
         self,
         tasks,               # List of (group_name: str, file_list: List[str], templates: List[Template])
         output_dir: str,
-        output_format: str = "PNG",   # "PNG" or "JPEG"
+        output_format: str = "JPEG",   # "PNG" or "JPEG"
         diversify_config=None,
         parent=None,
     ):

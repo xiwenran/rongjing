@@ -901,7 +901,7 @@ class MainWindow(QMainWindow):
         fv.addLayout(_row(self.output_dir_edit, _btn("选择", self._browse_output, w=64), spacing=6))
         fv.addSpacing(8)
 
-        self.format_combo = QComboBox(); self.format_combo.addItems(["PNG", "JPEG"])
+        self.format_combo = QComboBox(); self.format_combo.addItems(["JPEG", "PNG"])
         self.format_combo.setFixedWidth(86)
         self._format_row_widget = QWidget(); self._fix_bg(self._format_row_widget, _SIDE)
         frw_layout = QHBoxLayout(self._format_row_widget)
