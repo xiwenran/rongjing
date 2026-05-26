@@ -25,3 +25,6 @@ _build_info.py
 .vscode/
 *.swp
 templates/*.json
+
+# Claude Code 本地状态（含 codex-rescue 子代理临时 worktree）
+.claude/
