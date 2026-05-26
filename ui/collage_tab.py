@@ -580,8 +580,8 @@ class CollageTab(QWidget):
         self._diversify.config_changed.connect(self._on_diversify_changed)
         self.config_changed.connect(lambda _cfg: self._refresh_state())
         self._output_count_spin.valueChanged.connect(self._on_output_count_changed)
-        self._single_mode_btn.clicked.connect(lambda: self._set_batch_mode(False))
-        self._batch_mode_btn.clicked.connect(lambda: self._set_batch_mode(True))
+        self._single_mode_btn.clicked.connect(lambda: (self._set_batch_mode(False), self._choose_input_dir()))
+        self._batch_mode_btn.clicked.connect(lambda: (self._set_batch_mode(True), self._choose_input_dir()))
         self._subfolder_list.currentRowChanged.connect(self._on_subfolder_selected)
         self._auto_adapt_btn.clicked.connect(self._on_auto_adapt_clicked)
 
