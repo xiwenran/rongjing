@@ -588,6 +588,9 @@ class MainWindow(QMainWindow):
             nav_items.append(("  🎨  AI 背景", next_idx))
             self._page_indices["ai_generate"] = next_idx
             next_idx += 1
+        nav_items.append(("  🛡️  去水印", next_idx))
+        self._page_indices["dewatermark"] = next_idx
+        next_idx += 1
         for label_text, idx in nav_items:
             btn = QPushButton(label_text)
             btn.setObjectName("navBtn")
@@ -629,6 +632,9 @@ class MainWindow(QMainWindow):
             self._ai_generate_tab = AIGenerateTab(backgrounds_dir=self._backgrounds_dir)
             self._ai_generate_tab.save_finished.connect(self._on_ai_backgrounds_saved)
             self.stack.addWidget(self._ai_generate_tab)
+        from ui.dewatermark_tab import DewatermarkTab
+        self._dewatermark_tab = DewatermarkTab()
+        self.stack.addWidget(self._dewatermark_tab)
         self.stack.addWidget(self._build_settings_tab())
         rl.addWidget(self.stack, 1)
 
