@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+from PIL import Image
+from PyQt6.QtCore import QEvent, Qt
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -13,6 +14,8 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -22,7 +25,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.dewatermark import DewatermarkRunner
+from core.dewatermark import DewatermarkRunner, dewatermark_image
 
 
 _WIN = "#F7F7F7"
@@ -42,6 +45,10 @@ class DewatermarkTab(QWidget):
         self._files: list[str] = []
         self._output_dir = ""
         self._runner: DewatermarkRunner | None = None
+        self._preview_mode = "processed"
+        self._preview_index = 0
+        self._preview_source: Image.Image | None = None
+        self._preview_processed: Image.Image | None = None
         self.setAcceptDrops(True)
         self.setObjectName("DewatermarkTab")
         self.setStyleSheet(self._stylesheet())
@@ -75,18 +82,50 @@ class DewatermarkTab(QWidget):
 
         body = QWidget()
         body.setObjectName("body")
-        layout = QVBoxLayout(body)
+        layout = QHBoxLayout(body)
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(14)
 
-        layout.addWidget(self._step_input())
-        layout.addWidget(self._step_strength())
-        layout.addWidget(self._step_output())
-        layout.addWidget(self._step_action())
-        layout.addStretch(1)
+        layout.addWidget(self._build_left_column(), 0)
+        layout.addWidget(self._build_middle_column(), 0)
+        layout.addWidget(self._build_preview_column(), 1)
 
         scroll.setWidget(body)
         root.addWidget(scroll)
+
+    def _build_left_column(self) -> QWidget:
+        box = QWidget()
+        box.setObjectName("column")
+        box.setFixedWidth(360)
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        layout.addWidget(self._step_input())
+        layout.addWidget(self._step_output())
+        layout.addStretch(1)
+        return box
+
+    def _build_middle_column(self) -> QWidget:
+        box = QWidget()
+        box.setObjectName("column")
+        box.setFixedWidth(360)
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        layout.addWidget(self._step_strength())
+        layout.addWidget(self._step_action())
+        layout.addWidget(self._step_summary())
+        layout.addStretch(1)
+        return box
+
+    def _build_preview_column(self) -> QWidget:
+        box = QWidget()
+        box.setObjectName("column")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        layout.addWidget(self._step_preview(), 1)
+        return box
 
     def _step_input(self) -> QWidget:
         card = _card()
@@ -137,6 +176,7 @@ class DewatermarkTab(QWidget):
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self._strength_group.addButton(btn)
             grid.addWidget(btn, 0, idx)
+            btn.clicked.connect(self._update_preview)
 
             hint = QLabel(desc)
             hint.setObjectName("hint")
@@ -158,6 +198,7 @@ class DewatermarkTab(QWidget):
         self._choose_output_btn.clicked.connect(self._choose_output_dir)
         self._format_combo = QComboBox()
         self._format_combo.addItems(["JPEG", "PNG", "保持原格式"])
+        self._format_combo.currentTextChanged.connect(self._update_preview)
         row.addWidget(self._choose_output_btn)
         row.addWidget(self._format_combo)
         layout.addLayout(row)
@@ -194,6 +235,66 @@ class DewatermarkTab(QWidget):
         layout.addWidget(self._status_label)
         return card
 
+    def _step_summary(self) -> QWidget:
+        card = _card()
+        layout = card.layout()
+        layout.addWidget(_title("已选内容"))
+
+        self._summary_label = QLabel("暂无待处理图片")
+        self._summary_label.setObjectName("hint")
+        self._summary_label.setWordWrap(True)
+        layout.addWidget(self._summary_label)
+
+        self._file_list = QListWidget()
+        self._file_list.setObjectName("fileList")
+        self._file_list.setMinimumHeight(240)
+        self._file_list.currentRowChanged.connect(self._on_preview_file_changed)
+        layout.addWidget(self._file_list)
+        return card
+
+    def _step_preview(self) -> QWidget:
+        card = _card()
+        layout = card.layout()
+        layout.addWidget(_title("处理预览"))
+
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        self._preview_name = QLabel("未选择图片")
+        self._preview_name.setObjectName("previewName")
+        self._preview_name.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        top.addWidget(self._preview_name, 1)
+
+        self._original_btn = QPushButton("原图")
+        self._processed_btn = QPushButton("处理后")
+        for btn, mode in ((self._original_btn, "original"), (self._processed_btn, "processed")):
+            btn.setObjectName("previewModeBtn")
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda checked=False, value=mode: self._set_preview_mode(value))
+            top.addWidget(btn)
+        layout.addLayout(top)
+
+        self._preview_label = QLabel("选择图片后，这里会显示处理预览")
+        self._preview_label.setObjectName("previewCanvas")
+        self._preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview_label.setMinimumHeight(520)
+        self._preview_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._preview_label.installEventFilter(self)
+        layout.addWidget(self._preview_label, 1)
+
+        info = QHBoxLayout()
+        info.setSpacing(10)
+        self._preview_meta = QLabel("处理中强度：中")
+        self._preview_meta.setObjectName("hint")
+        self._preview_tip = QLabel("默认预览首张图，可在中列切换")
+        self._preview_tip.setObjectName("hint")
+        self._preview_tip.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        info.addWidget(self._preview_meta)
+        info.addWidget(self._preview_tip, 1)
+        layout.addLayout(info)
+
+        self._processed_btn.setChecked(True)
+        return card
+
     def _choose_dir(self):
         start = os.path.expanduser("~")
         path = QFileDialog.getExistingDirectory(self, "选择图片文件夹", start)
@@ -228,7 +329,9 @@ class DewatermarkTab(QWidget):
                 seen.add(norm)
                 self._files.append(norm)
         self._files.sort(key=lambda p: p.lower())
+        self._preview_index = 0
         self._refresh_state()
+        self._update_preview()
 
     def _refresh_state(self):
         count = len(self._files)
@@ -239,6 +342,13 @@ class DewatermarkTab(QWidget):
         else:
             self._input_hint.setText("未选择图片，可拖入文件夹或多张图片")
 
+        self._summary_label.setText(
+            "暂无待处理图片"
+            if not count
+            else f"共 {count} 张，当前预览第 {min(self._preview_index + 1, count)} 张"
+        )
+        self._sync_file_list()
+
         running = self._runner is not None and self._runner.isRunning()
         self._start_btn.setEnabled(bool(self._files and self._output_dir) and not running)
         self._cancel_btn.setEnabled(running)
@@ -248,6 +358,9 @@ class DewatermarkTab(QWidget):
         self._format_combo.setEnabled(not running)
         for btn in self._strength_group.buttons():
             btn.setEnabled(not running)
+        self._file_list.setEnabled(not running)
+        self._original_btn.setEnabled(self._preview_source is not None)
+        self._processed_btn.setEnabled(self._preview_processed is not None)
 
     def _start(self):
         if not self._files:
@@ -295,6 +408,88 @@ class DewatermarkTab(QWidget):
         text = self._format_combo.currentText()
         return "original" if text == "保持原格式" else text
 
+    def _sync_file_list(self):
+        self._file_list.blockSignals(True)
+        self._file_list.clear()
+        for path in self._files:
+            item = QListWidgetItem(os.path.basename(path))
+            item.setToolTip(path)
+            self._file_list.addItem(item)
+        if self._files:
+            self._preview_index = min(self._preview_index, len(self._files) - 1)
+            self._file_list.setCurrentRow(self._preview_index)
+        self._file_list.blockSignals(False)
+
+    def _on_preview_file_changed(self, row: int):
+        if row < 0 or row >= len(self._files):
+            return
+        self._preview_index = row
+        self._summary_label.setText(f"共 {len(self._files)} 张，当前预览第 {row + 1} 张")
+        self._update_preview()
+
+    def _set_preview_mode(self, mode: str):
+        self._preview_mode = mode
+        self._original_btn.setChecked(mode == "original")
+        self._processed_btn.setChecked(mode == "processed")
+        self._render_preview()
+
+    def _update_preview(self):
+        if not self._files:
+            self._preview_source = None
+            self._preview_processed = None
+            self._preview_name.setText("未选择图片")
+            self._preview_meta.setText(f"处理中强度：{self._current_strength_label()}")
+            self._preview_label.setPixmap(QPixmap())
+            self._preview_label.setText("选择图片后，这里会显示处理预览")
+            self._refresh_state()
+            return
+
+        path = self._files[min(self._preview_index, len(self._files) - 1)]
+        try:
+            with Image.open(path) as img:
+                self._preview_source = img.convert("RGB")
+            self._preview_processed = dewatermark_image(self._preview_source.copy(), self._current_strength())
+            self._preview_name.setText(os.path.basename(path))
+            self._preview_meta.setText(
+                f"处理中强度：{self._current_strength_label()}  ·  输出格式：{self._format_combo.currentText()}"
+            )
+            self._preview_tip.setText("右侧默认显示处理后图片，可切回原图")
+            self._render_preview()
+        except Exception as exc:
+            self._preview_source = None
+            self._preview_processed = None
+            self._preview_name.setText(os.path.basename(path))
+            self._preview_label.setPixmap(QPixmap())
+            self._preview_label.setText(f"预览失败：{exc}")
+        self._refresh_state()
+
+    def _render_preview(self):
+        current = self._preview_processed if self._preview_mode == "processed" else self._preview_source
+        if current is None:
+            return
+        pixmap = _pil_to_pixmap(current)
+        if pixmap.isNull():
+            self._preview_label.setPixmap(QPixmap())
+            self._preview_label.setText("预览生成失败")
+            return
+
+        scaled = pixmap.scaled(
+            self._preview_label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._preview_label.setText("")
+        self._preview_label.setPixmap(scaled)
+
+    def _current_strength_label(self) -> str:
+        mapping = {"low": "轻", "medium": "中", "high": "强"}
+        return mapping.get(self._current_strength(), "中")
+
+    def eventFilter(self, watched, event):
+        if watched is self._preview_label and event.type() == QEvent.Type.Resize:
+            self._render_preview()
+        return super().eventFilter(watched, event)
+
     def _stylesheet(self) -> str:
         return f"""
         QWidget#DewatermarkTab, QWidget#body {{ background: {_WIN}; }}
@@ -308,6 +503,7 @@ class DewatermarkTab(QWidget):
             background: rgba(7,193,96,0.12); color: {_GREEN}; font-size: 12px;
             font-weight: 600; padding: 4px 10px; border-radius: 10px;
         }}
+        QLabel#previewName {{ font-size: 14px; font-weight: 700; }}
         QWidget#card {{
             background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {_CARD}, stop:1 #F8F8F8);
             border-radius: 16px; border: 1px solid {_SEP};
@@ -329,9 +525,26 @@ class DewatermarkTab(QWidget):
         QPushButton#strengthBtn:checked {{
             background: {_GREEN}; color: white; border-color: {_GREEN};
         }}
+        QPushButton#previewModeBtn:checked {{
+            background: rgba(7,193,96,0.14); color: {_GREEN}; border-color: rgba(7,193,96,0.24);
+        }}
         QComboBox {{
             background: {_INPUT}; border: 1px solid {_SEP};
             border-radius: 8px; padding: 9px 12px; color: {_TEXT};
+        }}
+        QListWidget#fileList {{
+            background: {_INPUT}; border: 1px solid {_SEP}; border-radius: 12px;
+            padding: 6px; outline: none;
+        }}
+        QListWidget#fileList::item {{
+            background: transparent; border-radius: 8px; padding: 8px 10px; color: {_TEXT};
+        }}
+        QListWidget#fileList::item:selected {{
+            background: rgba(7,193,96,0.14); color: {_GREEN};
+        }}
+        QLabel#previewCanvas {{
+            background: {_INPUT}; border: 1px solid {_SEP}; border-radius: 18px;
+            padding: 12px; color: {_TEXT2};
         }}
         QProgressBar {{
             background: {_INPUT}; border: none; border-radius: 8px; height: 12px;
@@ -368,3 +581,10 @@ def _scan_images(folder: str) -> list[str]:
             if _is_image(path):
                 files.append(path)
     return sorted(files, key=lambda p: p.lower())
+
+
+def _pil_to_pixmap(image: Image.Image) -> QPixmap:
+    rgb = image.convert("RGB")
+    data = rgb.tobytes("raw", "RGB")
+    qimg = QImage(data, rgb.width, rgb.height, rgb.width * 3, QImage.Format.Format_RGB888).copy()
+    return QPixmap.fromImage(qimg)

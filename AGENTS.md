@@ -185,6 +185,7 @@ _RED   = "#FA5151"   # 危险色
 - [x] 按钮改为胶囊/圆角形状
 - [x] 卡片区块视觉区分
 - [x] 新建 FEATURES.md / 更新 README.md
+- [x] 去水印模块三列布局（左侧输入输出 / 中列强度操作 / 右侧处理预览）
 
 ---
 
@@ -203,6 +204,7 @@ _RED   = "#FA5151"   # 危险色
 11. **侧边栏布局压缩**：小屏幕上表单内容放入 QScrollArea，按钮固定在底部
 12. **macOS 26 Tahoe beta 兼容性**：Mac 版本在本机用 `bash build_app.sh` 打包，Windows 版本用 GitHub Actions
 13. **模板数据目录**：`main.py` 中 `get_data_dir()` 返回系统级目录（`~/Library/Application Support/融景/templates/`），与 app bundle 完全分离
+14. **去水印预览缩放**：右侧预览图不要直接写死尺寸，需跟随 `QLabel` 尺寸变化重新 `scaled(..., KeepAspectRatio)`，否则窗口缩放后预览会发虚或留大片空白
 
 ---
 
