@@ -98,14 +98,20 @@ class Template:
 ### VideoRunner(QThread)
 - tasks 格式：`List[(video_path: str, templates: List[Template])]`
 - **逻辑**：视频每帧 = PPT 内容（嵌入目标），模板背景图 = 场景（接收画面）
-- 使用 PyAV 重编码：libx264 视频 + AAC 音频
-- **速度优化（多重）**：
-  - `precompute_template_cache(..., ppt_size=(w,h))` 视频开始前预计算透视系数
-  - `embed_image_pil_fast` 使用 RGB 3通道 + BILINEAR 插值（比 BICUBIC RGBA 快约 3-4×）
-  - `ThreadPoolExecutor(max_workers=N-1)` 并行处理帧：PIL/numpy C 代码释放 GIL，多线程可真正并行；滑动窗口（`deque` 最多 `num_workers*2` 帧在飞）保证按顺序编码
-- **编码预设**：`preset=veryfast`（比 fast 快约 30-50%，画质无明显损失）
-- **PTS 修复**：视频用帧计数器 `out_frame.pts = frame_i`；音频用样本计数器
+- 使用 PyAV 重编码：H.264 视频 + AAC 音频
+- **三段流水线**（核心性能架构）：把「单线程从头干到尾」拆成三段并行运转
+  - **解码线程**：跑 `inp.demux()`，视频帧 `to_image()` 后放入有界 `decode_q`，音频帧重采样后放入 `audio_q`
+  - **嵌入线程池**：主线程从 `decode_q` 取帧 `pool.submit(embed_image_pil_fast)`，沿用 `pending deque` 滑动窗口（`num_workers*2` 帧在飞）
+  - **编码线程**：消费 `audio_q` + `encode_q`，做 `encode` + `mux`。**所有 `outp.mux` 只在这一个线程发生**（PyAV container 非线程安全）
+  - 收益：解码（PyAV）和编码（libx264/VideoToolbox）不再被关在同一线程轮流跑，可与嵌入真正重叠
+- **Mac 硬件编码（VideoToolbox）**：`_detect_encoder()` 探测 `h264_videotoolbox` 可用性
+  - 可用（Mac）→ 用 VideoToolbox，码率用 `bit_rate`（不支持 crf），按背景分辨率估算 `bg_w*bg_h*fps*0.07`，上限 20Mbps
+  - 不可用（Windows/Linux）→ 降级回 `libx264 + {crf:18, preset:veryfast}`
+- **帧顺序保证**：嵌入并行（乱序完成），但 `_drain` 永远 `popleft` 取最小 `frame_i` 且 `fut.result()` 阻塞等待，`encode_q` FIFO，输出严格有序
+- **底层优化**：`precompute_template_cache(..., ppt_size=(w,h))` 预计算透视系数使 cache 只读；`embed_image_pil_fast` 用 RGB 3通道 + BILINEAR 插值
+- **PTS 修复**：视频用帧计数器 `out_frame.pts = frame_i`；音频用样本计数器 `resampled.pts = audio_pts; audio_pts += resampled.samples`
 - 音频用 `av.AudioResampler(format="fltp", layout, rate)` 转格式后编 AAC
+- **abort / 异常**：`_abort` 标志三线程轮询；`_send_sentinel` 在 abort 或消费线程已死时腾队列槽位避免永久阻塞；解码/编码线程异常存入共享变量，主线程 join 后检查并经 `finished` 信号报错
 
 ---
 
@@ -185,7 +191,7 @@ _RED   = "#FA5151"   # 危险色
 - [x] 按钮改为胶囊/圆角形状
 - [x] 卡片区块视觉区分
 - [x] 新建 FEATURES.md / 更新 README.md
-- [x] 去水印模块三列布局（左侧输入输出 / 中列强度操作 / 右侧处理预览）
+- [x] 去水印模块拼图式布局（左侧设置栏 / 右侧处理预览 / 底部输出与开始条）
 
 ---
 
