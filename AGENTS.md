@@ -211,6 +211,7 @@ _RED   = "#FA5151"   # 危险色
 12. **macOS 26 Tahoe beta 兼容性**：Mac 版本在本机用 `bash build_app.sh` 打包，Windows 版本用 GitHub Actions
 13. **模板数据目录**：`main.py` 中 `get_data_dir()` 返回系统级目录（`~/Library/Application Support/融景/templates/`），与 app bundle 完全分离
 14. **去水印预览缩放**：右侧预览图不要直接写死尺寸，需跟随 `QLabel` 尺寸变化重新 `scaled(..., KeepAspectRatio)`，否则窗口缩放后预览会发虚或留大片空白
+15. **去水印来源按钮语义**：顶部「单张 / 多张图」「批量文件夹」是用户第一眼看到的入口，点击时必须直接打开对应选择器，不能只切换状态；强度选项不要把子控件塞进空文本 `QPushButton`，否则按钮高度按空文本计算，文字可能被裁掉
 
 ---
 
