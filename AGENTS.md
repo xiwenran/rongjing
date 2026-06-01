@@ -92,7 +92,7 @@ class Template:
 - 信号：`progress(done, total, msg)` / `finished(success, msg)`
 - tasks 格式：`List[(group_name: str, file_list: List[str], templates: List[Template])]`
 - 输出目录结构：`output_dir/group_name/template_name/1.png, 2.png, ...`
-- 输出尺寸来自 `template.output_width/height`（无全局尺寸参数）
+- 输出尺寸默认按导出页全局分辨率处理：默认 1920 宽并保持比例；选择「原始 / 模板尺寸」时回到 `template.output_width/height`，若模板为 0 则使用背景图原始尺寸
 - **速度优化**：每个模板调用一次 `precompute_template_cache(bg_img, points)` 预计算 mask 和背景数组（RGB，3通道），再对所有图片调用 `embed_image_pil_fast(ppt_img, cache)`；使用 BILINEAR 替代 BICUBIC（2-3× 速度提升）
 
 ### VideoRunner(QThread)
@@ -192,6 +192,7 @@ _RED   = "#FA5151"   # 危险色
 - [x] 卡片区块视觉区分
 - [x] 新建 FEATURES.md / 更新 README.md
 - [x] 去水印模块拼图式布局（左侧设置栏 / 右侧处理预览 / 底部输出与开始条）
+- [x] 图片批量导出增加分辨率选项，默认 1920 宽，解决 1024×768 背景导致成品偏低清晰度的问题
 
 ---
 
@@ -212,6 +213,7 @@ _RED   = "#FA5151"   # 危险色
 13. **模板数据目录**：`main.py` 中 `get_data_dir()` 返回系统级目录（`~/Library/Application Support/融景/templates/`），与 app bundle 完全分离
 14. **去水印预览缩放**：右侧预览图不要直接写死尺寸，需跟随 `QLabel` 尺寸变化重新 `scaled(..., KeepAspectRatio)`，否则窗口缩放后预览会发虚或留大片空白
 15. **去水印来源按钮语义**：顶部「单张 / 多张图」「批量文件夹」是用户第一眼看到的入口，点击时必须直接打开对应选择器，不能只切换状态；强度选项不要把子控件塞进空文本 `QPushButton`，否则按钮高度按空文本计算，文字可能被裁掉
+16. **批次差异化高档性能**：高档差异化的主要耗时在后处理，不在透视合成本身；`strip_metadata()` 不要用逐像素 `getdata()` 搬运，噪声用 `float32` 路径，轻微缩放/旋转优先用 `Image.BILINEAR`，避免 `Image.BICUBIC` 把批量导出拖慢
 
 ---
 

@@ -17,6 +17,30 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".wmv"}
 
 
+def scaled_size_for_width(source_size: Tuple[int, int], target_width: int) -> Optional[Tuple[int, int]]:
+    if target_width <= 0:
+        return None
+    source_w, source_h = source_size
+    if source_w <= 0 or source_h <= 0:
+        return None
+    target_height = max(1, round(target_width * source_h / source_w))
+    return target_width, target_height
+
+
+def scale_points_for_size(
+    points: List[List[float]],
+    source_size: Tuple[int, int],
+    target_size: Tuple[int, int],
+) -> List[List[float]]:
+    source_w, source_h = source_size
+    target_w, target_h = target_size
+    if source_w <= 0 or source_h <= 0:
+        return points
+    scale_x = target_w / source_w
+    scale_y = target_h / source_h
+    return [[point[0] * scale_x, point[1] * scale_y] for point in points]
+
+
 def natural_sort_key(s: str):
     """按数字块/非数字块拆分字符串，数字块转整数比较，实现自然排序。
     例：['1','2','10','11'] 而非字典序 ['1','10','11','2']"""
@@ -41,6 +65,7 @@ class BatchRunner(QThread):
         tasks,               # List of (group_name: str, file_list: List[str], templates: List[Template])
         output_dir: str,
         output_format: str = "JPEG",   # "PNG" or "JPEG"
+        output_width: int = 0,
         diversify_config=None,
         parent=None,
     ):
@@ -48,6 +73,7 @@ class BatchRunner(QThread):
         self.tasks = tasks
         self.output_dir = output_dir
         self.output_format = output_format
+        self.output_width = output_width
         self.diversify_config = diversify_config
         self._diversify_run_seed = random.SystemRandom().getrandbits(64)
         self._abort = False
@@ -72,8 +98,8 @@ class BatchRunner(QThread):
                     out_sub = os.path.join(self.output_dir, group_name, template.name)
                     os.makedirs(out_sub, exist_ok=True)
 
-                    # Use template's configured output size (0 = auto/background size)
-                    output_size = (
+                    # 0 = use template/background size. Otherwise keep aspect ratio at target width.
+                    template_output_size = (
                         (template.output_width, template.output_height)
                         if template.output_width > 0 else None
                     )
@@ -84,8 +110,25 @@ class BatchRunner(QThread):
                         with Image.open(files[0]) as first_img:
                             ppt_size = first_img.size
                     with Image.open(template.background_path) as bg_img:
+                        bg_size = bg_img.size
+                        render_size = template_output_size
+                        if self.output_width > 0:
+                            render_size = scaled_size_for_width(
+                                render_size or bg_size,
+                                self.output_width,
+                            )
+                        if render_size:
+                            render_bg = bg_img.convert("RGB").resize(render_size, Image.LANCZOS)
+                            render_points = scale_points_for_size(
+                                template.screen_points,
+                                bg_size,
+                                render_size,
+                            )
+                        else:
+                            render_bg = bg_img
+                            render_points = template.screen_points
                         cache = precompute_template_cache(
-                            bg_img, template.screen_points, ppt_size=ppt_size
+                            render_bg, render_points, ppt_size=ppt_size
                         )
 
                     def _process_one_image(i: int, img_path: str):
@@ -100,9 +143,6 @@ class BatchRunner(QThread):
 
                         if self._abort:
                             raise RuntimeError("已取消")
-
-                        if output_size:
-                            result = result.resize(output_size, Image.LANCZOS)
 
                         seed = None
                         if self.diversify_config is not None and getattr(self.diversify_config, "enabled", False):

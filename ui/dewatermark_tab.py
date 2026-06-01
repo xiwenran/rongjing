@@ -170,23 +170,22 @@ class DewatermarkTab(QWidget):
         self._strength_group = QButtonGroup(self)
         self._strength_group.setExclusive(True)
 
-        options = [
-            ("轻", "只剥元数据，像素不变", "low"),
-            ("中", "轻微 resize 来回 + 重编码", "medium"),
-            ("强", "额外加入微噪声和颜色扰动", "high"),
-        ]
-        for title, desc, value in options:
-            btn = QPushButton(f"{title}\n{desc}")
+        strength_row = QHBoxLayout()
+        strength_row.setSpacing(8)
+        options = [("轻", "low"), ("中", "medium"), ("强", "high")]
+        for title, value in options:
+            btn = QPushButton(title)
             btn.setObjectName("strengthCard")
             btn.setCheckable(True)
             btn.setProperty("strength", value)
-            btn.setMinimumHeight(62)
+            btn.setMinimumHeight(38)
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             btn.clicked.connect(self._update_preview)
             self._strength_group.addButton(btn)
-            layout.addWidget(btn)
+            strength_row.addWidget(btn)
             if value == "medium":
                 btn.setChecked(True)
+        layout.addLayout(strength_row)
         return box
 
     def _build_file_section(self) -> QWidget:
@@ -570,9 +569,9 @@ class DewatermarkTab(QWidget):
             border-color: {_GREEN};
         }}
         QWidget#DewatermarkTab QPushButton#strengthCard {{
-            text-align: left;
+            text-align: center;
             border-radius: 14px;
-            padding: 0px;
+            padding: 8px 12px;
         }}
         QWidget#DewatermarkTab QPushButton#strengthCard:checked {{
             background: #E8F8EE;

@@ -73,7 +73,7 @@ def diversify_image(
     result = _scale_center_crop(result, rng.uniform(-config.scale_range, config.scale_range))
 
     angle = rng.uniform(-config.rotation_range, config.rotation_range)
-    result = result.rotate(angle, resample=Image.BICUBIC, expand=False)
+    result = result.rotate(angle, resample=Image.BILINEAR, expand=False)
 
     result = _add_noise(result, config.noise_intensity, rng)
 
@@ -110,8 +110,10 @@ def randomize_jpeg_quality(
 
 def strip_metadata(img: Image.Image) -> Image.Image:
     """Remove EXIF and image metadata from a copy of the image."""
-    clean = Image.new(img.mode, img.size)
-    clean.putdata(list(img.getdata()))
+    clean = img.copy()
+    clean.info.clear()
+    if hasattr(clean, "encoderinfo"):
+        clean.encoderinfo = {}
     return clean
 
 
@@ -123,7 +125,7 @@ def _scale_center_crop(img: Image.Image, scale: float) -> Image.Image:
 
     new_w = max(1, int(round(w * factor)))
     new_h = max(1, int(round(h * factor)))
-    resized = img.resize((new_w, new_h), Image.BICUBIC)
+    resized = img.resize((new_w, new_h), Image.BILINEAR)
 
     if factor >= 1:
         left = (new_w - w) // 2
@@ -135,15 +137,22 @@ def _scale_center_crop(img: Image.Image, scale: float) -> Image.Image:
     left = (w - crop_w) // 2
     top = (h - crop_h) // 2
     cropped = img.crop((left, top, left + crop_w, top + crop_h))
-    return cropped.resize((w, h), Image.BICUBIC)
+    return cropped.resize((w, h), Image.BILINEAR)
 
 
 def _add_noise(img: Image.Image, sigma: float, rng: random.Random) -> Image.Image:
     if sigma <= 0:
         return img
 
-    arr = np.array(img).astype(np.float32)
+    arr = np.asarray(img)
     np_rng = np.random.default_rng(rng.randint(0, 2**31))
-    noise = np_rng.normal(0, sigma, arr.shape)
-    noisy = np.clip(arr + noise, 0, 255).astype(np.uint8)
+    try:
+        noise = np_rng.standard_normal(arr.shape, dtype=np.float32)
+    except TypeError:
+        noise = np_rng.standard_normal(arr.shape).astype(np.float32)
+
+    noisy = arr.astype(np.float32, copy=False)
+    noisy += noise * np.float32(sigma)
+    np.clip(noisy, 0, 255, out=noisy)
+    noisy = noisy.astype(np.uint8)
     return Image.fromarray(noisy, img.mode)

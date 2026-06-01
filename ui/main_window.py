@@ -272,6 +272,13 @@ OUTPUT_PRESETS = {
     "自定义...":                 None,
 }
 
+BATCH_OUTPUT_WIDTH_PRESETS = {
+    "高清 1920 宽（默认）": 1920,
+    "原始 / 模板尺寸": 0,
+    "2K 2560 宽": 2560,
+    "4K 3840 宽": 3840,
+}
+
 
 # ── Native file/folder pickers ────────────────────────────────────────────────
 
@@ -520,6 +527,7 @@ class MainWindow(QMainWindow):
         self._last_dir_output  = self._settings.value("last_dir_output",   _home)
         self._last_dir_images  = self._settings.value("last_dir_images",   _home)
         self._last_dir_videos  = self._settings.value("last_dir_videos",   _home)
+        self._batch_output_width = int(self._settings.value("batch_output_width", 1920))
 
         self._build_ui()
         self._set_batch_mode(0)   # apply initial mode button styles
@@ -909,12 +917,19 @@ class MainWindow(QMainWindow):
 
         self.format_combo = QComboBox(); self.format_combo.addItems(["JPEG", "PNG"])
         self.format_combo.setFixedWidth(86)
+        self.resolution_combo = QComboBox()
+        self.resolution_combo.setFixedWidth(158)
+        for label in BATCH_OUTPUT_WIDTH_PRESETS:
+            self.resolution_combo.addItem(label)
+        self._set_batch_resolution_combo(self._batch_output_width)
+        self.resolution_combo.currentTextChanged.connect(self._save_batch_output_width)
         self._format_row_widget = QWidget(); self._fix_bg(self._format_row_widget, _SIDE)
         frw_layout = QHBoxLayout(self._format_row_widget)
         frw_layout.setContentsMargins(0, 0, 0, 0); frw_layout.setSpacing(8)
         frw_layout.addWidget(_lbl("图片格式:", "hint"))
         frw_layout.addWidget(self.format_combo)
-        frw_layout.addWidget(_lbl("（输出尺寸使用模板中配置的规格）", "hint"))
+        frw_layout.addWidget(_lbl("分辨率:", "hint"))
+        frw_layout.addWidget(self.resolution_combo)
         frw_layout.addStretch()
         fv.addWidget(self._format_row_widget)
         fv.addSpacing(16); fv.addWidget(_sep()); fv.addSpacing(14)
@@ -1513,6 +1528,21 @@ class MainWindow(QMainWindow):
         setattr(self, f"_last_dir_{key}", path)
         self._settings.setValue(f"last_dir_{key}", path)
 
+    def _set_batch_resolution_combo(self, output_width: int):
+        for label, width in BATCH_OUTPUT_WIDTH_PRESETS.items():
+            if width == output_width:
+                self.resolution_combo.setCurrentText(label)
+                return
+        self.resolution_combo.setCurrentIndex(0)
+        self._batch_output_width = BATCH_OUTPUT_WIDTH_PRESETS[self.resolution_combo.currentText()]
+
+    def _save_batch_output_width(self, *_):
+        self._batch_output_width = BATCH_OUTPUT_WIDTH_PRESETS.get(
+            self.resolution_combo.currentText(),
+            1920,
+        )
+        self._settings.setValue("batch_output_width", self._batch_output_width)
+
     # ── Batch actions ─────────────────────────────────────────────────────────
 
     def _browse_input(self):
@@ -1800,6 +1830,7 @@ class MainWindow(QMainWindow):
         self._batch_runner = BatchRunner(
             tasks, output_dir,
             self.format_combo.currentText(),
+            output_width=self._batch_output_width,
             diversify_config=self._batch_diversify.get_config(),
         )
         self._batch_runner.progress.connect(self._on_progress)
