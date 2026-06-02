@@ -242,6 +242,6 @@ GitHub Releases Mac 下载地址：https://github.com/xiwenran/rongjing/releases
 
 1. **高风险改动**（发布逻辑/写库/防误操作）→ 派 worker 读取 echo-reviewer.md 做审查，或使用 App Review
 2. **方向性问题**（项目定位、产品路线、架构主线、商业方向、长期维护策略；用户表达「要不要 / 像 A 还是像 B / 感觉但不确定」；或主会话准备列出 ≥2 个互斥方向）→ 先停下，说「这是方向性问题，建议三省讨论」
-3. **有实质改动** → 建议写入 Obsidian changelog（`~/Obsidian/PersonalWiki/项目/融景/changelog/`）
+3. **有实质改动或有价值讨论** → 先盘点本轮项目事实、经验、决策、方案和思维框架，再按 Obsidian A-I 路由判断写入位置。项目 changelog 只记录项目事实；跨项目经验和思维框架另行进入 `认知/经验性/` 或 `认知/哲科性/`。
 4. **git push 前** → 脱敏扫描（绝对路径/token/邮箱/AppID）
 5. **规则文件改动** → 检查 rule-sync-matrix.yml 同步状态
