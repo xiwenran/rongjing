@@ -11,7 +11,11 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PIL import Image
 
 from models.template_model import Template
-from core.image_processor import embed_image_pil_fast, precompute_template_cache
+from core.image_processor import (
+    embed_document_paper_pil,
+    embed_image_pil_fast,
+    precompute_template_cache,
+)
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".wmv"}
@@ -127,9 +131,17 @@ class BatchRunner(QThread):
                         else:
                             render_bg = bg_img
                             render_points = template.screen_points
-                        cache = precompute_template_cache(
-                            render_bg, render_points, ppt_size=ppt_size
-                        )
+                        render_bg = render_bg.convert("RGB")
+                        render_type = getattr(template, "template_type", "screen") or "screen"
+                        if render_type != "document_paper":
+                            render_type = "screen"
+                        cache = None
+                        if render_type == "screen":
+                            cache = precompute_template_cache(
+                                render_bg, render_points, ppt_size=ppt_size
+                            )
+                        else:
+                            render_bg = render_bg.copy()
 
                     def _process_one_image(i: int, img_path: str):
                         if self._abort:
@@ -139,7 +151,15 @@ class BatchRunner(QThread):
                         out_path = os.path.join(out_sub, f"{i}{ext}")
 
                         with Image.open(img_path) as ppt_img:
-                            result = embed_image_pil_fast(ppt_img, cache)
+                            if render_type == "document_paper":
+                                result = embed_document_paper_pil(
+                                    ppt_img,
+                                    render_bg.copy(),
+                                    render_points,
+                                    render_preset=getattr(template, "render_preset", "clear"),
+                                )
+                            else:
+                                result = embed_image_pil_fast(ppt_img, cache)
 
                         if self._abort:
                             raise RuntimeError("已取消")

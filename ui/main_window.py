@@ -279,6 +279,17 @@ BATCH_OUTPUT_WIDTH_PRESETS = {
     "4K 3840 宽": 3840,
 }
 
+TEMPLATE_CATEGORIES = ["教室大屏模板", "文档模板", "希沃白板模板", "电脑背景模板"]
+TEMPLATE_TYPES = {
+    "屏幕 / 大屏": "screen",
+    "文档纸张": "document_paper",
+}
+DOCUMENT_PRESETS = {
+    "清晰优先": "clear",
+    "真实纸感": "paper",
+    "暖光纸面": "warm",
+}
+
 
 # ── Native file/folder pickers ────────────────────────────────────────────────
 
@@ -411,21 +422,32 @@ class TemplatePickerDialog(QDialog):
 
         self._checks: list[QCheckBox] = []
         preselected = set(preselected or [])
-        if len(all_templates) > 6:
-            from PyQt6.QtWidgets import QGridLayout
-            grid = QGridLayout(); grid.setSpacing(8); grid.setContentsMargins(0, 0, 0, 0)
-            iv.addLayout(grid)
-            for idx_t, t in enumerate(all_templates):
-                cb = QCheckBox(t.name)
-                cb.setChecked(t.name in preselected)
-                grid.addWidget(cb, idx_t // 2, idx_t % 2)
-                self._checks.append(cb)
-        else:
-            for t in all_templates:
-                cb = QCheckBox(t.name)
-                cb.setChecked(t.name in preselected)
-                iv.addWidget(cb)
-                self._checks.append(cb)
+        grouped = {}
+        for t in all_templates:
+            grouped.setdefault(getattr(t, "category", "教室大屏模板") or "教室大屏模板", []).append(t)
+        for category in sorted(grouped):
+            heading = QLabel(category)
+            heading.setStyleSheet(f"font-size: 12px; font-weight: 700; color: {_TEXT2}; padding: 6px 4px 2px 4px;")
+            iv.addWidget(heading)
+            if len(grouped[category]) > 4:
+                from PyQt6.QtWidgets import QGridLayout
+                grid = QGridLayout(); grid.setSpacing(8); grid.setContentsMargins(0, 0, 0, 0)
+                iv.addLayout(grid)
+                for idx_t, t in enumerate(grouped[category]):
+                    cb = QCheckBox(t.name)
+                    cb.setProperty("template_name", t.name)
+                    cb.setToolTip(f"{category} · {getattr(t, 'template_type', 'screen')}")
+                    cb.setChecked(t.name in preselected)
+                    grid.addWidget(cb, idx_t // 2, idx_t % 2)
+                    self._checks.append(cb)
+            else:
+                for t in grouped[category]:
+                    cb = QCheckBox(t.name)
+                    cb.setProperty("template_name", t.name)
+                    cb.setToolTip(f"{category} · {getattr(t, 'template_type', 'screen')}")
+                    cb.setChecked(t.name in preselected)
+                    iv.addWidget(cb)
+                    self._checks.append(cb)
         iv.addStretch()
         scroll.setWidget(inner)
         lv.addWidget(scroll)
@@ -447,7 +469,7 @@ class TemplatePickerDialog(QDialog):
         lv.addWidget(btns)
 
     def selected_names(self) -> list:
-        return [c.text() for c in self._checks if c.isChecked()]
+        return [c.property("template_name") or c.text() for c in self._checks if c.isChecked()]
 
 
 def _set_green_selection(table_widget):
@@ -530,6 +552,7 @@ class MainWindow(QMainWindow):
         self._batch_output_width = int(self._settings.value("batch_output_width", 1920))
 
         self._build_ui()
+        self._on_template_type_changed()
         self._set_batch_mode(0)   # apply initial mode button styles
         self._refresh_template_list()
 
@@ -717,6 +740,31 @@ class MainWindow(QMainWindow):
         fv.addSpacing(4)
         self.tpl_name_edit = QLineEdit(); self.tpl_name_edit.setPlaceholderText("模板名称…")
         fv.addWidget(self.tpl_name_edit)
+        fv.addSpacing(10)
+
+        fv.addWidget(_lbl("模板分类", "cap"))
+        fv.addSpacing(4)
+        self.tpl_category_combo = QComboBox()
+        self.tpl_category_combo.addItems(TEMPLATE_CATEGORIES)
+        fv.addWidget(self.tpl_category_combo)
+        fv.addSpacing(10)
+
+        fv.addWidget(_lbl("合成类型", "cap"))
+        fv.addSpacing(4)
+        self.tpl_type_combo = QComboBox()
+        for label, value in TEMPLATE_TYPES.items():
+            self.tpl_type_combo.addItem(label, value)
+        self.tpl_type_combo.currentIndexChanged.connect(self._on_template_type_changed)
+        fv.addWidget(self.tpl_type_combo)
+        fv.addSpacing(10)
+
+        self.tpl_preset_label = _lbl("文档预设", "cap")
+        fv.addWidget(self.tpl_preset_label)
+        fv.addSpacing(4)
+        self.tpl_preset_combo = QComboBox()
+        for label, value in DOCUMENT_PRESETS.items():
+            self.tpl_preset_combo.addItem(label, value)
+        fv.addWidget(self.tpl_preset_combo)
         fv.addSpacing(10)
 
         # Background
@@ -1108,14 +1156,18 @@ class MainWindow(QMainWindow):
             edit.setText(default)
         self._settings.setValue(key, value)
 
-    def _on_ai_backgrounds_saved(self, saved_paths: list):
+    def _on_ai_backgrounds_saved(self, saved_paths: list, context: dict | None = None):
         if not saved_paths:
             return
+        context = context or {}
         first = saved_paths[0]
         self._switch_page(self._page_indices.get("editor", 0))
         self._new_template()
         self.bg_path_edit.setText(first)
         self.canvas.set_background(first)
+        self._set_template_category(context.get("category", "教室大屏模板"))
+        self._set_template_type(context.get("template_type", "screen"))
+        self._set_document_preset(context.get("render_preset", "clear"))
         self._update_auto_detect_enabled()
         self._save_dir("bg", os.path.dirname(first))
 
@@ -1125,9 +1177,12 @@ class MainWindow(QMainWindow):
         self.template_list.clear()
         for t in self.tm.load_all():
             loaded = self.tm.load(t.name) or t
-            text = f"⚠ {loaded.name}" if loaded.is_broken else loaded.name
+            category = getattr(loaded, "category", "教室大屏模板") or "教室大屏模板"
+            marker = "⚠ " if loaded.is_broken else ""
+            text = f"{marker}{loaded.name}  ·  {category}"
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, loaded.name)
+            item.setToolTip(f"{category} · {getattr(loaded, 'template_type', 'screen')}")
             if loaded.is_broken:
                 item.setForeground(QColor(_RED))
                 item.setToolTip("此模板的背景图已不存在，请重新选择背景图")
@@ -1142,6 +1197,9 @@ class MainWindow(QMainWindow):
         self._loaded_tpl_name = name
         self.tpl_name_edit.setText(tpl.name)
         self.bg_path_edit.setText(tpl.background_path)
+        self._set_template_category(getattr(tpl, "category", "教室大屏模板"))
+        self._set_template_type(getattr(tpl, "template_type", "screen"))
+        self._set_document_preset(getattr(tpl, "render_preset", "clear"))
         if os.path.exists(tpl.background_path):
             self.canvas.set_background(tpl.background_path)
             self.canvas.set_points(tpl.screen_points)
@@ -1170,8 +1228,30 @@ class MainWindow(QMainWindow):
         self.tpl_name_edit.clear()
         self.bg_path_edit.clear()
         self.preview_path_edit.clear()
+        self._set_template_category("教室大屏模板")
+        self._set_template_type("screen")
+        self._set_document_preset("clear")
         self.canvas.clear_all()
         self._update_auto_detect_enabled()
+
+    def _set_template_category(self, category: str):
+        if category not in TEMPLATE_CATEGORIES:
+            self.tpl_category_combo.addItem(category)
+        self.tpl_category_combo.setCurrentText(category or "教室大屏模板")
+
+    def _set_template_type(self, template_type: str):
+        idx = self.tpl_type_combo.findData(template_type or "screen")
+        self.tpl_type_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._on_template_type_changed()
+
+    def _set_document_preset(self, render_preset: str):
+        idx = self.tpl_preset_combo.findData(render_preset or "clear")
+        self.tpl_preset_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+    def _on_template_type_changed(self, *_):
+        is_document = self.tpl_type_combo.currentData() == "document_paper"
+        self.tpl_preset_label.setVisible(is_document)
+        self.tpl_preset_combo.setVisible(is_document)
 
     def _delete_template(self):
         item = self.template_list.currentItem()
@@ -1436,7 +1516,17 @@ class MainWindow(QMainWindow):
                 return
 
         w, h = self._editor_output_size()
-        self.tm.save(Template(name, bg, self.canvas.points, w, h))
+        template_type = self.tpl_type_combo.currentData() or "screen"
+        self.tm.save(Template(
+            name,
+            bg,
+            self.canvas.points,
+            w,
+            h,
+            category=self.tpl_category_combo.currentText() or "教室大屏模板",
+            template_type=template_type,
+            render_preset=self.tpl_preset_combo.currentData() or "clear",
+        ))
         self._loaded_tpl_name = name
         self._refresh_template_list()
         for i in range(self.template_list.count()):
@@ -1557,6 +1647,15 @@ class MainWindow(QMainWindow):
             self._save_dir("output", path)
             self.output_dir_edit.setText(path)
 
+    def _templates_for_picker(self, screen_only: bool = False) -> list:
+        templates = self.tm.load_all()
+        if screen_only:
+            templates = [
+                t for t in templates
+                if (getattr(t, "template_type", "screen") or "screen") == "screen"
+            ]
+        return templates
+
     def _make_tpl_btn(self, row: int, selected_names: list) -> QPushButton:
         """Create a template-picker button for a table row."""
         def label():
@@ -1580,7 +1679,7 @@ class MainWindow(QMainWindow):
         """)
 
         def open_picker():
-            templates = self.tm.load_all()
+            templates = self._templates_for_picker()
             if not templates:
                 QMessageBox.warning(self, "提示", "请先在「模板配置」中创建并保存场景模板"); return
             current = self._row_selections.get(row, [])
@@ -1619,9 +1718,9 @@ class MainWindow(QMainWindow):
             QPushButton:hover {{ background: #E5E5E5; }}
         """)
         def open_picker():
-            templates = self.tm.load_all()
+            templates = self._templates_for_picker(screen_only=True)
             if not templates:
-                QMessageBox.warning(self, "提示", "请先在「模板配置」中创建并保存场景模板"); return
+                QMessageBox.warning(self, "提示", "视频模式只支持屏幕类模板，请先创建 screen 类型模板"); return
             current = self._video_row_selections.get(row, [])
             dlg = TemplatePickerDialog(templates, current, self)
             dlg.move(btn.mapToGlobal(QPoint(0, btn.height() + 4)))
@@ -1640,7 +1739,7 @@ class MainWindow(QMainWindow):
         input_dir = self.input_dir_edit.text().strip()
         if not input_dir or not os.path.isdir(input_dir):
             QMessageBox.warning(self, "提示", "请先选择有效的输入文件夹"); return
-        templates = self.tm.load_all()
+        templates = self._templates_for_picker()
         if not templates:
             QMessageBox.warning(self, "提示", "请先在「模板配置」中创建并保存场景模板"); return
         subfolders = sorted((d for d in os.listdir(input_dir)
@@ -1676,7 +1775,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "提示", "该文件夹内没有子文件夹也没有图片文件")
 
     def _apply_all(self):
-        templates = self.tm.load_all()
+        templates = self._templates_for_picker()
         if not templates:
             QMessageBox.warning(self, "提示", "暂无模板"); return
         dlg = TemplatePickerDialog(templates, self._last_apply_all, self)
@@ -1852,6 +1951,8 @@ class MainWindow(QMainWindow):
             templates = [t for name in names for t in [self.tm.load(name)] if t]
             if not templates:
                 QMessageBox.warning(self, "提示", f"请为「{item.text()}」选择场景模板"); return
+            if any((getattr(t, "template_type", "screen") or "screen") != "screen" for t in templates):
+                QMessageBox.warning(self, "提示", "视频模式只支持屏幕类模板，请重新选择模板"); return
             tasks.append((video_path, templates))
         self._batch_runner = VideoRunner(tasks, output_dir)
         self._batch_runner.progress.connect(self._on_progress)

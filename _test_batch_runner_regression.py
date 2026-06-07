@@ -124,11 +124,31 @@ def test_batch_output_width_renders_on_target_canvas():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_document_paper_template_outputs_file():
+    root = tempfile.mkdtemp(prefix="rongjing_batch_document_")
+    try:
+        template, ppt_path = make_fixture(root, bg_size=(90, 70), ppt_size=(42, 50))
+        template.name = "文档模板"
+        template.category = "文档模板"
+        template.template_type = "document_paper"
+        template.render_preset = "paper"
+        tasks = [("组A", [ppt_path], [template])]
+
+        out_path = run_batch(tasks, os.path.join(root, "out"))
+
+        assert os.path.exists(out_path)
+        with Image.open(out_path) as img:
+            assert img.size == (90, 70)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def run_tests():
     test_disabled_diversify_matches_none_output()
     test_enabled_diversify_changes_repeated_outputs()
     test_batch_output_width_keeps_background_aspect_ratio()
     test_batch_output_width_renders_on_target_canvas()
+    test_document_paper_template_outputs_file()
     print("batch runner regression tests passed")
 
 

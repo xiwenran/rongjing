@@ -19,6 +19,9 @@ class Template:
     screen_points: List[List[float]]  # 4 points [[x,y],...] TL→TR→BR→BL in bg image coords
     output_width: int = 0   # 0 = auto (use bg image size)
     output_height: int = 0  # 0 = auto
+    category: str = "教室大屏模板"
+    template_type: str = "screen"
+    render_preset: str = "clear"
     is_broken: bool = False
 
     def to_dict(self) -> dict:
@@ -28,16 +31,23 @@ class Template:
             "screen_points": self.screen_points,
             "output_width": self.output_width,
             "output_height": self.output_height,
+            "category": self.category or "教室大屏模板",
+            "template_type": self.template_type or "screen",
+            "render_preset": self.render_preset or "clear",
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "Template":
+        template_type = d.get("template_type", d.get("render_type", "screen"))
         return cls(
             name=d["name"],
             background_path=d["background_path"],
             screen_points=d["screen_points"],
             output_width=d.get("output_width", 0),
             output_height=d.get("output_height", 0),
+            category=d.get("category", "教室大屏模板"),
+            template_type=template_type,
+            render_preset=d.get("render_preset", d.get("blend_mode", "clear")),
             is_broken=d.get("is_broken", False),
         )
 

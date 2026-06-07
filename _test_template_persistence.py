@@ -73,6 +73,9 @@ def test_save_external_background_copies_and_existing_background_is_direct():
         data = read_json(os.path.join(templates_dir, "教室1.json"))
         dst = os.path.join(backgrounds_dir, "教室1_bg.jpg")
         assert data["background_path"] == dst
+        assert data["category"] == "教室大屏模板"
+        assert data["template_type"] == "screen"
+        assert data["render_preset"] == "clear"
         assert os.path.exists(dst)
         assert sha256(src) == sha256(dst)
         assert "is_broken" not in data
@@ -82,6 +85,51 @@ def test_save_external_background_copies_and_existing_background_is_direct():
         assert loaded.is_broken is False
         assert read_json(os.path.join(templates_dir, "教室1.json"))["background_path"] == dst
         assert sorted(os.listdir(backgrounds_dir)) == ["教室1_bg.jpg"]
+
+    with_tmp(run)
+
+
+def test_new_template_fields_persist_and_load():
+    def run(root, templates_dir, backgrounds_dir, sources_dir):
+        src = os.path.join(sources_dir, "paper.png")
+        write_file(src, b"paper-image")
+        manager = TemplateManager(templates_dir, backgrounds_dir=backgrounds_dir)
+        manager.save(Template(
+            name="文档模板1",
+            background_path=src,
+            screen_points=[[0, 0], [10, 0], [10, 10], [0, 10]],
+            category="文档模板",
+            template_type="document_paper",
+            render_preset="warm",
+        ))
+
+        loaded = manager.load("文档模板1")
+        assert loaded.category == "文档模板"
+        assert loaded.template_type == "document_paper"
+        assert loaded.render_preset == "warm"
+
+    with_tmp(run)
+
+
+def test_old_json_defaults_to_screen_template_fields():
+    def run(root, templates_dir, backgrounds_dir, sources_dir):
+        src = os.path.join(sources_dir, "old.jpg")
+        write_file(src, b"old-image")
+        old_data = {
+            "name": "旧字段模板",
+            "background_path": src,
+            "screen_points": [[0, 0], [10, 0], [10, 10], [0, 10]],
+            "output_width": 0,
+            "output_height": 0,
+        }
+        json_path = os.path.join(templates_dir, "旧字段模板.json")
+        write_json(json_path, old_data)
+
+        manager = TemplateManager(templates_dir, backgrounds_dir=backgrounds_dir)
+        loaded = manager.load("旧字段模板")
+        assert loaded.category == "教室大屏模板"
+        assert loaded.template_type == "screen"
+        assert loaded.render_preset == "clear"
 
     with_tmp(run)
 
@@ -183,6 +231,8 @@ def test_load_hash_mismatch_deletes_copy_and_keeps_original_json():
 
 def run_tests():
     test_save_external_background_copies_and_existing_background_is_direct()
+    test_new_template_fields_persist_and_load()
+    test_old_json_defaults_to_screen_template_fields()
     test_load_old_existing_background_migrates_once()
     test_load_migration_copy_failure_keeps_original_json()
     test_load_missing_old_background_marks_broken_without_json_change()

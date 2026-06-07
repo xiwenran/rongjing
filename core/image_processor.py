@@ -1,7 +1,7 @@
 from typing import List, Optional, Tuple
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 
 def order_points(pts: List[List[float]]) -> np.ndarray:
@@ -166,6 +166,89 @@ def embed_image_pil_fast(ppt_img: Image.Image, cache: dict) -> Image.Image:
     warped_arr = np.array(warped, dtype=np.float32)
     result = (1.0 - cache["mask_f"]) * cache["bg_arr"] + cache["mask_f"] * warped_arr
     return Image.fromarray(result.astype(np.uint8), "RGB")
+
+
+def embed_document_paper_pil(
+    paper_img: Image.Image,
+    bg_img: Image.Image,
+    points: List[List[float]],
+    render_preset: str = "clear",
+    feather: int = 3,
+) -> Image.Image:
+    """Place a document/page image onto a real paper or desktop background.
+
+    Unlike screen compositing, the page should inherit some background light and
+    paper texture. The source remains dominant so text stays readable.
+    """
+    paper_img = paper_img.convert("RGB")
+    bg_img = bg_img.convert("RGB")
+    bg_w, bg_h = bg_img.size
+    paper_w, paper_h = paper_img.size
+
+    preset = (render_preset or "clear").lower()
+    if preset == "paper":
+        paper_img = ImageEnhance.Contrast(paper_img).enhance(1.06)
+        paper_img = ImageEnhance.Sharpness(paper_img).enhance(1.08)
+    elif preset == "warm":
+        paper_img = ImageEnhance.Contrast(paper_img).enhance(1.04)
+        arr = np.array(paper_img, dtype=np.float32)
+        arr[:, :, 0] *= 1.035
+        arr[:, :, 1] *= 1.012
+        arr[:, :, 2] *= 0.955
+        paper_img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
+    else:
+        preset = "clear"
+        paper_img = ImageEnhance.Contrast(paper_img).enhance(1.10)
+        paper_img = ImageEnhance.Sharpness(paper_img).enhance(1.12)
+
+    src_pts = np.float64([[0, 0], [paper_w, 0], [paper_w, paper_h], [0, paper_h]])
+    dst_pts = order_points(points).astype(np.float64)
+    coeffs = _perspective_coeffs(src_pts, dst_pts)
+    warped = paper_img.transform(
+        (bg_w, bg_h), Image.PERSPECTIVE, coeffs, Image.BILINEAR
+    )
+
+    mask = Image.new("L", (bg_w, bg_h), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.polygon([(float(p[0]), float(p[1])) for p in dst_pts], fill=255)
+    if feather > 0:
+        mask_orig = np.array(mask)
+        mask = mask.filter(ImageFilter.MinFilter(3))
+        mask = mask.filter(ImageFilter.GaussianBlur(feather))
+        mask = Image.fromarray(
+            np.where(mask_orig >= 128, np.array(mask), 0).astype(np.uint8)
+        )
+
+    bg_arr = np.array(bg_img, dtype=np.float32)
+    warped_arr = np.array(warped, dtype=np.float32)
+    mask_f = np.array(mask, dtype=np.float32)[:, :, np.newaxis] / 255.0
+
+    bg_luma = (
+        0.299 * bg_arr[:, :, 0]
+        + 0.587 * bg_arr[:, :, 1]
+        + 0.114 * bg_arr[:, :, 2]
+    )[:, :, np.newaxis] / 255.0
+    light = 0.82 + bg_luma * 0.28
+
+    if preset == "paper":
+        rng = np.random.default_rng(17)
+        noise = rng.normal(0, 1.4, (bg_h, bg_w, 1)).astype(np.float32)
+        page = warped_arr * light + bg_arr * 0.10 + noise
+        alpha = 0.86
+    elif preset == "warm":
+        warm = np.array([7.0, 3.0, -5.0], dtype=np.float32)
+        rng = np.random.default_rng(23)
+        noise = rng.normal(0, 0.9, (bg_h, bg_w, 1)).astype(np.float32)
+        page = warped_arr * (0.86 + bg_luma * 0.22) + bg_arr * 0.08 + warm + noise
+        alpha = 0.88
+    else:
+        page = warped_arr * (0.90 + bg_luma * 0.16) + bg_arr * 0.04
+        alpha = 0.94
+
+    page = np.clip(page, 0, 255)
+    blend_f = mask_f * alpha
+    result = (1.0 - blend_f) * bg_arr + blend_f * page
+    return Image.fromarray(np.clip(result, 0, 255).astype(np.uint8), "RGB")
 
 
 def embed_image(

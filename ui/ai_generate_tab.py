@@ -52,6 +52,7 @@ _TEXT2 = "#888888"
 _RED = "#FA5151"
 _CACHE_DIR = os.path.join(os.path.expanduser("~"), ".rongjing", "ai_cache")
 
+_TARGET_TYPES = ["教室大屏", "文档纸张", "电脑背景", "希沃白板"]
 _PERSONAL_SCENES = ["教师办公桌", "家里书桌", "校园办公室", "教研室", "居家备课", "宿舍"]
 _CLASSROOM_SCENES = ["小学教室", "中学教室", "多媒体教室"]
 
@@ -179,7 +180,7 @@ class _GenerateWorker(QThread):
 
 class _HistoryDialog(QDialog):
     """历史生成记录对话框。"""
-    load_requested = pyqtSignal(list)
+    load_requested = pyqtSignal(list, dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -308,8 +309,19 @@ class _HistoryDialog(QDialog):
         for f in sorted(os.listdir(batch_dir)):
             if f.lower().endswith((".png", ".jpg")):
                 images.append(Image.open(os.path.join(batch_dir, f)).copy())
+        template_context = {}
+        meta_path = os.path.join(batch_dir, "meta.json")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    meta = json.load(f)
+                raw_context = meta.get("template_context", {})
+                if isinstance(raw_context, dict):
+                    template_context = raw_context
+            except Exception:
+                template_context = {}
         if images:
-            self.load_requested.emit(images)
+            self.load_requested.emit(images, template_context)
             self.accept()
 
     def _delete_batch(self, batch_dir: str):
@@ -391,9 +403,13 @@ class _ImageTile(QFrame):
 
 
 class AIGenerateTab(QWidget):
-    save_finished = pyqtSignal(list)
+    save_finished = pyqtSignal(list, dict)
 
     _TRANSLATIONS = {
+        "教室大屏": "a classroom large display template background",
+        "文档纸张": "a realistic blank sheet of paper on a desk for document compositing",
+        "电脑背景": "a computer screen template background",
+        "希沃白板": "a Seewo interactive whiteboard classroom template background",
         "笔记本": "a laptop computer (MacBook Pro or Lenovo ThinkPad)",
         "台式机": "a desktop computer monitor on a desk",
         "希沃一体机": "a large Seewo brand interactive touchscreen display mounted on the classroom wall",
@@ -427,6 +443,7 @@ class AIGenerateTab(QWidget):
         self._backgrounds_dir = backgrounds_dir
         self._images: list[Image.Image] = []
         self._tiles: list[_ImageTile] = []
+        self._loaded_template_context: dict | None = None
         self._build_ui()
         self._wire_signals()
 
@@ -493,12 +510,14 @@ class AIGenerateTab(QWidget):
         content.setSpacing(10)
 
         content.addWidget(_label("AI 背景图", "h2"))
+        self._target_group = TagGroup("背景用途", _TARGET_TYPES)
         self._device_group = TagGroup("设备类型", ["笔记本", "台式机", "希沃一体机"])
         self._scene_group = TagGroup("使用场景", _PERSONAL_SCENES)
         self._light_group = TagGroup("灯光", ["暖色灯光", "自然光", "冷白光", "柔光", "偏暗氛围"])
         self._angle_group = TagGroup("拍摄角度", ["正面平视", "略偏侧角", "略微俯视", "略微仰视"])
         self._decor_group = TagGroup("桌面摆件", ["有植物", "有咖啡杯", "有书本", "有小摆件", "极简"])
         self._tag_groups = [
+            self._target_group,
             self._device_group,
             self._scene_group,
             self._light_group,
@@ -617,11 +636,18 @@ class AIGenerateTab(QWidget):
         return wrapper
 
     def _wire_signals(self):
+        self._target_group.selection_changed.connect(self._on_target_changed)
         self._device_group.selection_changed.connect(self._on_device_changed)
         self._random_btn.clicked.connect(lambda: self._random_select_unset())
         self._generate_btn.clicked.connect(self._generate)
         self._history_btn.clicked.connect(self._show_history)
         self._save_btn.clicked.connect(self._save_selected)
+
+    def _on_target_changed(self, value: str):
+        if value == "希沃白板":
+            self._device_group.set_selection("希沃一体机")
+        elif value == "文档纸张":
+            self._device_group.set_selection("")
 
     def _on_device_changed(self, value: str):
         if value == "希沃一体机":
@@ -636,9 +662,11 @@ class AIGenerateTab(QWidget):
                 group.random_select(rng)
 
     def _build_prompt(self) -> str:
+        target = self._target_group.get_selection()
         device = self._device_group.get_selection()
         scene = self._scene_group.get_selection()
-        is_classroom = device == "希沃一体机" or scene in _CLASSROOM_SCENES
+        is_document = target == "文档纸张"
+        is_classroom = target in ("教室大屏", "希沃白板") or device == "希沃一体机" or scene in _CLASSROOM_SCENES
 
         parts = [
             "A candid realistic photograph shot on a smartphone camera",
@@ -646,19 +674,29 @@ class AIGenerateTab(QWidget):
             "subtle depth of field, natural lighting variations, slight film grain",
         ]
 
+        if is_document:
+            parts.extend([
+                "realistic desktop background with a single blank white paper sheet as the main subject",
+                "paper sheet fills 65-80% of the frame, four paper corners clearly visible and easy to mark",
+                "paper surface mostly empty, no printed content, no handwriting, no text, no diagrams",
+                "natural paper texture, slight shadows around the paper edge, readable blank page area",
+            ])
+        elif target:
+            parts.append(self._TRANSLATIONS.get(target, target))
+
         # Device & scene
-        if device:
+        if device and not is_document:
             parts.append(self._TRANSLATIONS.get(device, device))
         if scene:
             parts.append(self._TRANSLATIONS.get(scene, scene))
 
         # 笔记本/台式机/希沃一体机：屏幕必须是画面主体，占 60-70% 面积
-        if device in ("笔记本", "台式机", "希沃一体机"):
+        if not is_document and device in ("笔记本", "台式机", "希沃一体机"):
             parts.append("the screen is the dominant element filling 60-70% of the frame")
             parts.append("close-up composition focused on the screen, minimal surrounding environment")
 
         # Chinese context — classroom vs personal
-        if is_classroom:
+        if is_classroom and not is_document:
             parts.append("Chinese school classroom with red Chinese national flag hanging on wall above the screen")
             if device == "希沃一体机":
                 # 希沃一体机：墙上标语保留，但黑板必须干净无板书
@@ -667,14 +705,17 @@ class AIGenerateTab(QWidget):
             else:
                 parts.append("red educational banners with Chinese calligraphy slogans on the wall")
                 parts.append("green chalkboard visible on the sides of the screen")
-        else:
+        elif not is_document:
             parts.append("Chinese domestic or office setting")
 
         # Screen — must be clean for compositing
-        parts.append("screen displays completely solid matte black, absolutely no reflections, no glare, no ambient light on screen surface")
+        if is_document:
+            parts.append("paper corners clearly visible, realistic perspective, clean composition")
+        else:
+            parts.append("screen displays completely solid matte black, absolutely no reflections, no glare, no ambient light on screen surface")
 
         # Lighting, angle, decor
-        for group in self._tag_groups[2:]:
+        for group in self._tag_groups[3:]:
             sel = group.get_selection()
             if sel:
                 parts.append(self._TRANSLATIONS.get(sel, sel))
@@ -689,9 +730,20 @@ class AIGenerateTab(QWidget):
         parts.append("all visible text and signage must be in simplified Chinese only")
         parts.append("no text about grades, homework, class names, subjects, schedules, or any academic content visible anywhere")
         parts.append("no watermark, no logo on screen")
-        parts.append("screen corners clearly visible, clean composition, realistic perspective")
+        if not is_document:
+            parts.append("screen corners clearly visible, clean composition, realistic perspective")
         parts.append("NOT an AI-generated image, looks like a real phone photo, natural and authentic")
         return ", ".join(parts)
+
+    def _template_context(self) -> dict:
+        target = self._target_group.get_selection()
+        if target == "文档纸张":
+            return {"category": "文档模板", "template_type": "document_paper", "render_preset": "paper"}
+        if target == "电脑背景":
+            return {"category": "电脑背景模板", "template_type": "screen", "render_preset": "clear"}
+        if target == "希沃白板":
+            return {"category": "希沃白板模板", "template_type": "screen", "render_preset": "clear"}
+        return {"category": "教室大屏模板", "template_type": "screen", "render_preset": "clear"}
 
     def _generate(self):
         from PyQt6.QtCore import QSettings
@@ -729,6 +781,7 @@ class AIGenerateTab(QWidget):
         self._empty_label.setText(f"正在生成第 {current}/{total} 张背景图…")
 
     def _on_generate_ok(self, images: list):
+        self._loaded_template_context = None
         self._images = images
         self._save_to_cache(images)
         self._render_results()
@@ -753,10 +806,12 @@ class AIGenerateTab(QWidget):
         # 保存 meta 信息
         meta = {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "target": self._target_group.get_selection(),
             "device": self._device_group.get_selection(),
             "scene": self._scene_group.get_selection(),
             "count": len(images),
             "aspect_ratio": self._aspect_combo.currentText(),
+            "template_context": self._template_context(),
         }
         with open(os.path.join(batch_dir, "meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
@@ -766,13 +821,14 @@ class AIGenerateTab(QWidget):
         dlg.load_requested.connect(self._load_history_images)
         dlg.exec()
 
-    def _load_history_images(self, images: list):
+    def _load_history_images(self, images: list, template_context: dict):
         """从历史记录加载图片到预览区。"""
+        self._loaded_template_context = dict(template_context) if template_context else None
         self._images = images
         self._render_results()
 
     def _render_results(self):
-        self._clear_results()
+        self._clear_results(clear_context=False)
         self._empty_label.setVisible(not self._images)
         aspect = self._aspect_combo.currentText()
         cols = 1 if len(self._images) <= 2 else 2
@@ -782,13 +838,15 @@ class AIGenerateTab(QWidget):
             self._results_grid.addWidget(tile, idx // cols, idx % cols)
         self._save_btn.setEnabled(bool(self._images))
 
-    def _clear_results(self):
+    def _clear_results(self, clear_context: bool = True):
         while self._results_grid.count():
             item = self._results_grid.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.deleteLater()
         self._tiles = []
+        if clear_context:
+            self._loaded_template_context = None
 
     def _save_selected(self):
         os.makedirs(self._backgrounds_dir, exist_ok=True)
@@ -803,7 +861,8 @@ class AIGenerateTab(QWidget):
         if not saved:
             QMessageBox.information(self, "未选择图片", "请至少勾选一张图片。")
             return
-        self.save_finished.emit(saved)
+        template_context = self._loaded_template_context or self._template_context()
+        self.save_finished.emit(saved, template_context)
 
 
 def _pil_to_pixmap(image: Image.Image) -> QPixmap:
