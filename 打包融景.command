@@ -1,6 +1,6 @@
 #!/bin/bash
 # 打包为 macOS .app + .dmg（便于分发给其他 Mac 用户）
-# 运行方式：bash build_app.sh（在仓库根目录执行）
+# 运行方式：双击本文件，或在仓库根目录执行 bash 打包融景.command
 #
 # 注意：在哪种 Mac 上打包，就只能在同架构 Mac 上运行：
 #   Apple Silicon (M1/M2/M3) → 生成的包只能在 M 系列 Mac 运行
@@ -31,8 +31,8 @@ pyinstaller \
   --hidden-import "PIL._tkinter_finder" \
   --hidden-import "av" \
   --hidden-import "numpy" \
+  --hidden-import "cv2" \
   --collect-all "av" \
-  --collect-all "cv2" \
   --collect-submodules "openai" \
   --noconfirm \
   --add-data "_build_info.py:." \

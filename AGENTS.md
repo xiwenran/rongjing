@@ -15,7 +15,7 @@ python3 main.py
 
 打包方式：
 ```bash
-bash build_app.sh   # 生成 dist/PPT场景合成工具.app + dist/PPT场景合成工具_arm64.dmg
+bash 打包融景.command   # 生成 dist/融景.app + dist/融景_arm64.dmg
 ```
 
 > 架构说明：PyInstaller 生成的包只能在同架构 Mac 运行（arm64 = Apple Silicon，x86_64 = Intel）。DMG 文件名含架构后缀。
@@ -29,7 +29,7 @@ bash build_app.sh   # 生成 dist/PPT场景合成工具.app + dist/PPT场景合�
 rongjing/
 ├── main.py                  # 入口：QApplication + MainWindow
 ├── requirements.txt         # PyQt6, Pillow, opencv-python, numpy, av, pyinstaller
-├── build_app.sh             # PyInstaller 打包脚本（--collect-all av cv2）
+├── 打包融景.command          # PyInstaller 打包脚本（collect av；cv2 只 hidden-import）
 ├── templates/               # 模板 JSON 文件存储目录（运行时读写）
 │   └── <name>.json
 ├── core/
@@ -221,6 +221,7 @@ _RED   = "#FA5151"   # 危险色
 16. **批次差异化高档性能**：高档差异化的主要耗时在后处理，不在透视合成本身；`strip_metadata()` 不要用逐像素 `getdata()` 搬运，噪声用 `float32` 路径，轻微缩放/旋转优先用 `Image.BILINEAR`，避免 `Image.BICUBIC` 把批量导出拖慢
 17. **模板分类与合成类型分离**：`category` 只负责列表和选择器分组，`template_type` 决定使用 screen 还是 document_paper 算法；不要用分类名称推断处理算法
 18. **文档纸张模板边界**：视频模式只允许 screen 模板；document_paper 以可读性和自然纸面融合为优先，不做 OCR、文字识别或内容修复
+19. **PyInstaller 不要 `--collect-all cv2`**：自动角点识别只需要懒加载 `cv2`，打包脚本保留 `--hidden-import cv2` 即可；`--collect-all cv2` 会让 PyInstaller 收集 OpenCV 全量资源，容易在 macOS 上被 `Killed: 9` 杀掉
 
 ---
 

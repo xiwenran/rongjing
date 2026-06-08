@@ -4,11 +4,9 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('_build_info.py', '.')]
 binaries = []
-hiddenimports = ['PIL._tkinter_finder', 'av', 'numpy']
+hiddenimports = ['PIL._tkinter_finder', 'av', 'numpy', 'cv2']
 hiddenimports += collect_submodules('openai')
 tmp_ret = collect_all('av')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('cv2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
