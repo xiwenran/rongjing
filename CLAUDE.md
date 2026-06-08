@@ -14,7 +14,8 @@ python3 main.py
 
 打包方式：
 ```bash
-bash build_app.sh   # 生成 dist/PPT场景合成工具.app + dist/PPT场景合成工具_arm64.dmg
+双击 打包融景启动器.app   # 推荐：自动打开终端并生成 dist/融景.app + dist/融景_arm64.dmg
+bash 打包融景.command     # 备用：终端方式
 ```
 
 > 架构说明：PyInstaller 生成的包只能在同架构 Mac 运行（arm64 = Apple Silicon，x86_64 = Intel）。DMG 文件名含架构后缀（`_arm64.dmg` / `_x86_64.dmg`），按需在对应机器上分别打包。
@@ -28,7 +29,11 @@ bash build_app.sh   # 生成 dist/PPT场景合成工具.app + dist/PPT场景合�
 rongjing/
 ├── main.py                  # 入口：QApplication + MainWindow
 ├── requirements.txt         # PyQt6, Pillow, opencv-python, numpy, av, pyinstaller
-├── build_app.sh             # PyInstaller 打包脚本（--collect-all av cv2）
+├── 打包融景.command          # 终端打包入口，转调 scripts/package_rongjing.sh
+├── 打包融景启动器.app        # 双击打包入口，自动打开终端执行打包
+├── scripts/
+│   ├── package_rongjing.sh  # PyInstaller 打包脚本（collect av；cv2 只 hidden-import）
+│   └── create_packaging_launcher.sh  # 重新生成双击打包启动器
 ├── templates/               # 模板 JSON 文件存储目录（运行时读写）
 │   └── <name>.json
 ├── core/
@@ -184,7 +189,7 @@ _RED   = "#FA5151"   # 危险色
 - [x] WeChat 风格亮色主题
 - [x] 路径跨会话记忆（QSettings）
 - [x] macOS 原生文件/文件夹选择器
-- [x] PyInstaller 打包脚本（`bash build_app.sh`）
+- [x] PyInstaller 打包脚本（双击 `打包融景启动器.app`，或运行 `bash 打包融景.command`）
 - [x] DMG 打包（`hdiutil create -format UDZO`，含架构后缀命名，内置 Gatekeeper 使用说明）
 - [x] 模式按钮初始绿色样式修复（Python 显式 setStyleSheet，不依赖 CSS :checked）
 - [x] 表格行选中色改为浅绿（直接在 table widget 上设置，避开 scope 隔离）
@@ -228,7 +233,7 @@ _RED   = "#FA5151"   # 危险色
 9. **cv2 在 PyInstaller 中的 bootstrap 递归**：opencv-python 的 `__init__.py` 调用 `importlib.import_module("cv2")` 时在冻结环境中触发递归。已彻底移除 cv2，用 PIL `Image.PERSPECTIVE` + `ImageDraw.polygon` + `ImageFilter.MinFilter/GaussianBlur` 替代，质量相当。
 10. **Windows 黑色区域（两处）**：`QWidget { background: transparent }` 在 Windows 上凡是没有显式绘制背景的 widget 都渲染为黑色。需要对 `root`（central widget）和 `self.tabs`（QTabWidget）都调用 `QPalette + setAutoFillBackground(True)` 才能彻底消除。`root` 用 `_WIN`，`self.tabs` 用 `_CARD`。
 11. **侧边栏布局压缩**：侧边栏使用单一 QVBoxLayout 时，在小屏幕（1366×768）上表单内容超出高度，addStretch 收缩为零，模板列表被压到最小高度只显示 1 条。解决方案：将表单内容放入 QScrollArea，「保存/卸载」按钮固定在 QScrollArea 下方（不参与滚动）。
-12. **macOS 26 Tahoe beta 兼容性**：GitHub Actions 用 macOS 14/15 编译的 PyQt6 在 macOS 26 上 PAC 签名校验失败崩溃。解决方案：Mac 版本在本机用 `bash build_app.sh` 打包，Windows 版本用 GitHub Actions 打包。
+12. **macOS 26 Tahoe beta 兼容性**：GitHub Actions 用 macOS 14/15 编译的 PyQt6 在 macOS 26 上 PAC 签名校验失败崩溃。解决方案：Mac 版本在本机用 `打包融景启动器.app` 或 `bash 打包融景.command` 打包，Windows 版本用 GitHub Actions 打包。
 13. **模板数据目录**：`main.py` 中 `get_data_dir()` 返回系统级目录，与 app bundle 完全分离。
 14. **demux 的 `dts=None` flush packet 不能跳过**：PyAV `inp.demux()` 结束时会发一个 `dts=None` 的 flush packet，用来排空 H.264 解码器的 B 帧重排序缓冲。若 `if packet.dts is None: continue` 跳过它，会丢失视频末尾若干帧（实测丢 2 帧）。正确做法是照常 `packet.decode()`。
 15. **视频三段流水线的线程安全靠 `queue.Queue` 屏障**：`audio_pts`、`AudioResampler` 等共享对象被解码线程和编码线程先后访问，没有显式锁——安全性依赖 `queue.Queue` 的 put/get 内部锁提供的 happens-before 屏障（解码线程发 sentinel 前的写，编码线程取到 sentinel 后可见）。改动流水线时不要绕过队列直接传递这些对象。
@@ -236,7 +241,8 @@ _RED   = "#FA5151"   # 危险色
 17. **VideoToolbox 不支持 crf**：`h264_videotoolbox` 编码器只认 `bit_rate`，不认 `crf`。`_detect_encoder()` 探测到它可用时用 `codec_context.bit_rate` 设码率；探测失败（Windows/Linux）才降级回 `libx264 + crf`。
 18. **命令行能跑 ≠ 打包 .app 能跑（网络）**：`core/ai_background.py` 调 openai SDK，打包成 .app 后报 `Connection error.` 但命令行各种环境都连得通、无法复现。根因是 .app 比命令行多出的环境差异：① PyInstaller 打包后 httpx 的 CA 证书路径可能丢失 ② .app 由 launchd 启动不继承 shell 环境变量，httpx 又不读 macOS 系统代理。解决：`_build_http_client()` 显式用 `certifi.where()` 建 SSL context + `urllib.request.getproxies()` 读系统代理注入 httpx.Client，整体包 try/except 降级；错误信息按 SSL/DNS/拒绝/超时分类。GUI 工具的真实运行形态是 .app，命令行测通不代表打包环境 OK。
 19. **QSettings domain 不稳定**：macOS 上 `QSettings('融景','RongJing')` 落到哪个 plist 受进程 bundle identifier 影响——命令行跑落 `org.python.python.RongJing.plist`，打包 .app 落另一个。用户跨版本/跨运行方式可能「配置丢失」。未根治；根治方案是 `main.py` 启动时 `QCoreApplication.setOrganizationDomain()` 设固定值 + 迁移旧配置。
-20. **探测「编码器名字存在」≠「能打开」**：`VideoRunner` 探测 VideoToolbox 用过 `av.codec.Codec("h264_videotoolbox","w")`，但这只查 FFmpeg 编码器注册表，不调 `avcodec_open2`。打包 .app 后名字注册了（探测通过）但实际打开失败 → 编码崩溃。修复：`_probe_videotoolbox()` 真正 `CodecContext.create(...) + .open()` 一次（这步才调 `avcodec_open2`），能打开才算可用。原则：探测要探到「真正会失败的那一步」，不能探一个早于失败点的代理指标。注意 PyAV `CodecContext` 无公开 `.close()`。
+20. **打包入口不要要求用户记命令**：`打包融景.command` 只保留为终端备用入口；面向用户优先提供 `打包融景启动器.app`，双击后自动打开 Terminal 执行 `scripts/package_rongjing.sh`。
+21. **探测「编码器名字存在」≠「能打开」**：`VideoRunner` 探测 VideoToolbox 用过 `av.codec.Codec("h264_videotoolbox","w")`，但这只查 FFmpeg 编码器注册表，不调 `avcodec_open2`。打包 .app 后名字注册了（探测通过）但实际打开失败 → 编码崩溃。修复：`_probe_videotoolbox()` 真正 `CodecContext.create(...) + .open()` 一次（这步才调 `avcodec_open2`），能打开才算可用。原则：探测要探到「真正会失败的那一步」，不能探一个早于失败点的代理指标。注意 PyAV `CodecContext` 无公开 `.close()`。
 
 ---
 

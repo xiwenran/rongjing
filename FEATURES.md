@@ -204,7 +204,8 @@
 ## 十二、打包与发布
 
 ### 12.1 Mac 打包
-- [x] 脚本：`bash build_app.sh`
+- [x] 推荐入口：双击 `打包融景启动器.app`
+- [x] 备用脚本：`bash 打包融景.command`
 - [x] 产物：`dist/融景.app`（双击运行）、`dist/融景_{arch}.dmg`（分发用）
 - [x] DMG 文件名含架构后缀：`融景_arm64.dmg`（Apple Silicon）、`融景_x86_64.dmg`（Intel）
 - [x] 首次运行提示：右键点击 .app → 打开（绕过 Gatekeeper）
@@ -216,7 +217,7 @@
 
 ### 12.3 发布流程
 - [x] 一键脚本：双击 `同步到GitHub.command`
-  1. 本地打包 Mac（`bash build_app.sh`）
+  1. 本地打包 Mac（双击 `打包融景启动器.app` 或运行 `bash 打包融景.command`）
   2. 创建 GitHub Release，上传 Mac DMG（**先建 Release，再 push 代码**，避免 Actions 上传时 Release 不存在的竞争问题）
   3. Push 代码触发 Windows Actions 打包，Windows ZIP 约 10-15 分钟后自动附加到同一 Release
 

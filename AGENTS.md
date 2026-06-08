@@ -15,7 +15,8 @@ python3 main.py
 
 打包方式：
 ```bash
-bash 打包融景.command   # 生成 dist/融景.app + dist/融景_arm64.dmg
+双击 打包融景启动器.app   # 推荐：自动打开终端并生成 dist/融景.app + dist/融景_arm64.dmg
+bash 打包融景.command     # 备用：终端方式
 ```
 
 > 架构说明：PyInstaller 生成的包只能在同架构 Mac 运行（arm64 = Apple Silicon，x86_64 = Intel）。DMG 文件名含架构后缀。
@@ -29,7 +30,11 @@ bash 打包融景.command   # 生成 dist/融景.app + dist/融景_arm64.dmg
 rongjing/
 ├── main.py                  # 入口：QApplication + MainWindow
 ├── requirements.txt         # PyQt6, Pillow, opencv-python, numpy, av, pyinstaller
-├── 打包融景.command          # PyInstaller 打包脚本（collect av；cv2 只 hidden-import）
+├── 打包融景.command          # 终端打包入口，转调 scripts/package_rongjing.sh
+├── 打包融景启动器.app        # 双击打包入口，自动打开终端执行打包
+├── scripts/
+│   ├── package_rongjing.sh  # PyInstaller 打包脚本（collect av；cv2 只 hidden-import）
+│   └── create_packaging_launcher.sh  # 重新生成双击打包启动器
 ├── templates/               # 模板 JSON 文件存储目录（运行时读写）
 │   └── <name>.json
 ├── core/
@@ -214,7 +219,7 @@ _RED   = "#FA5151"   # 危险色
 9. **cv2 在 PyInstaller 中的 bootstrap 递归**：已彻底移除 cv2，用 PIL 替代
 10. **Windows 黑色区域**：需要对 root 和 tabs 都用 `QPalette + setAutoFillBackground(True)` 才能消除
 11. **侧边栏布局压缩**：小屏幕上表单内容放入 QScrollArea，按钮固定在底部
-12. **macOS 26 Tahoe beta 兼容性**：Mac 版本在本机用 `bash build_app.sh` 打包，Windows 版本用 GitHub Actions
+12. **macOS 26 Tahoe beta 兼容性**：Mac 版本在本机用 `打包融景启动器.app` 或 `bash 打包融景.command` 打包，Windows 版本用 GitHub Actions
 13. **模板数据目录**：`main.py` 中 `get_data_dir()` 返回系统级目录（`~/Library/Application Support/融景/templates/`），与 app bundle 完全分离
 14. **去水印预览缩放**：右侧预览图不要直接写死尺寸，需跟随 `QLabel` 尺寸变化重新 `scaled(..., KeepAspectRatio)`，否则窗口缩放后预览会发虚或留大片空白
 15. **去水印来源按钮语义**：顶部「单张 / 多张图」「批量文件夹」是用户第一眼看到的入口，点击时必须直接打开对应选择器，不能只切换状态；强度选项不要把子控件塞进空文本 `QPushButton`，否则按钮高度按空文本计算，文字可能被裁掉
@@ -222,6 +227,7 @@ _RED   = "#FA5151"   # 危险色
 17. **模板分类与合成类型分离**：`category` 只负责列表和选择器分组，`template_type` 决定使用 screen 还是 document_paper 算法；不要用分类名称推断处理算法
 18. **文档纸张模板边界**：视频模式只允许 screen 模板；document_paper 以可读性和自然纸面融合为优先，不做 OCR、文字识别或内容修复
 19. **PyInstaller 不要 `--collect-all cv2`**：自动角点识别只需要懒加载 `cv2`，打包脚本保留 `--hidden-import cv2` 即可；`--collect-all cv2` 会让 PyInstaller 收集 OpenCV 全量资源，容易在 macOS 上被 `Killed: 9` 杀掉
+20. **打包入口不要要求用户记命令**：`打包融景.command` 只保留为终端备用入口；面向用户优先提供 `打包融景启动器.app`，双击后自动打开 Terminal 执行 `scripts/package_rongjing.sh`
 
 ---
 
