@@ -12,6 +12,19 @@ def _natural_key(s: str):
     return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
 
 
+TEMPLATE_CATEGORY_ALIASES = {
+    "教室大屏模板": "教师场景",
+    "希沃白板模板": "教师场景",
+    "电脑背景模板": "台式机电脑",
+    "文档模板": "文档纸张",
+}
+
+
+def normalize_template_category(category: str | None) -> str:
+    category = (category or "教师场景").strip()
+    return TEMPLATE_CATEGORY_ALIASES.get(category, category)
+
+
 @dataclass
 class Template:
     name: str
@@ -19,7 +32,7 @@ class Template:
     screen_points: List[List[float]]  # 4 points [[x,y],...] TL→TR→BR→BL in bg image coords
     output_width: int = 0   # 0 = auto (use bg image size)
     output_height: int = 0  # 0 = auto
-    category: str = "教室大屏模板"
+    category: str = "教师场景"
     template_type: str = "screen"
     render_preset: str = "clear"
     is_broken: bool = False
@@ -31,21 +44,23 @@ class Template:
             "screen_points": self.screen_points,
             "output_width": self.output_width,
             "output_height": self.output_height,
-            "category": self.category or "教室大屏模板",
+            "category": normalize_template_category(self.category),
             "template_type": self.template_type or "screen",
             "render_preset": self.render_preset or "clear",
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "Template":
-        template_type = d.get("template_type", d.get("render_type", "screen"))
+        category = normalize_template_category(d.get("category", "教师场景"))
+        default_type = "document_paper" if category == "文档纸张" else "screen"
+        template_type = d.get("template_type", d.get("render_type", default_type))
         return cls(
             name=d["name"],
             background_path=d["background_path"],
             screen_points=d["screen_points"],
             output_width=d.get("output_width", 0),
             output_height=d.get("output_height", 0),
-            category=d.get("category", "教室大屏模板"),
+            category=category,
             template_type=template_type,
             render_preset=d.get("render_preset", d.get("blend_mode", "clear")),
             is_broken=d.get("is_broken", False),

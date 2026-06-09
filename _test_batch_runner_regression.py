@@ -55,7 +55,8 @@ def run_batch(tasks, output_dir: str, diversify_config=None, output_width: int =
     loop.exec()
     runner.wait(1000)
     assert result.get("success"), result.get("msg")
-    return os.path.join(output_dir, "组A", "测试模板", "1.png")
+    template_name = tasks[0][2][0].name
+    return os.path.join(output_dir, "组A", template_name, "1.png")
 
 
 def test_disabled_diversify_matches_none_output():

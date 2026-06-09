@@ -52,8 +52,21 @@ _TEXT2 = "#888888"
 _RED = "#FA5151"
 _CACHE_DIR = os.path.join(os.path.expanduser("~"), ".rongjing", "ai_cache")
 
-_TARGET_TYPES = ["教室大屏", "文档纸张", "电脑背景", "希沃白板"]
-_PERSONAL_SCENES = ["教师办公桌", "家里书桌", "校园办公室", "教研室", "居家备课", "宿舍"]
+_TARGET_TYPES = ["教师场景", "台式机电脑", "笔记本室内", "文档纸张", "自定义场景"]
+_TARGET_DEVICES = {
+    "教师场景": ["希沃白板", "教室大屏", "多媒体大屏"],
+    "台式机电脑": ["台式显示器", "一体机屏幕", "双屏桌面"],
+    "笔记本室内": ["笔记本电脑", "笔记本外接屏"],
+    "文档纸张": ["A4 竖版纸", "A4 横版纸"],
+    "自定义场景": ["屏幕区域", "纸张区域"],
+}
+_TARGET_SCENES = {
+    "教师场景": ["小学教室", "中学教室", "多媒体教室", "教师办公室"],
+    "台式机电脑": ["教师办公桌", "家里书桌", "校园办公室", "教研室"],
+    "笔记本室内": ["家里书桌", "教师办公桌", "居家备课", "宿舍"],
+    "文档纸张": ["木质桌面", "暖光书桌", "冷白办公桌", "浅色桌面"],
+    "自定义场景": ["教师办公桌", "家里书桌", "校园办公室", "木质桌面"],
+}
 _CLASSROOM_SCENES = ["小学教室", "中学教室", "多媒体教室"]
 
 
@@ -406,13 +419,23 @@ class AIGenerateTab(QWidget):
     save_finished = pyqtSignal(list, dict)
 
     _TRANSLATIONS = {
-        "教室大屏": "a classroom large display template background",
+        "教师场景": "a realistic Chinese teacher classroom or office display template background",
         "文档纸张": "a realistic blank sheet of paper on a desk for document compositing",
-        "电脑背景": "a computer screen template background",
-        "希沃白板": "a Seewo interactive whiteboard classroom template background",
-        "笔记本": "a laptop computer (MacBook Pro or Lenovo ThinkPad)",
-        "台式机": "a desktop computer monitor on a desk",
-        "希沃一体机": "a large Seewo brand interactive touchscreen display mounted on the classroom wall",
+        "台式机电脑": "a desktop computer screen template background",
+        "笔记本室内": "a laptop computer indoor desk template background",
+        "自定义场景": "a realistic custom template background for compositing",
+        "笔记本电脑": "a laptop computer (MacBook Pro or Lenovo ThinkPad)",
+        "笔记本外接屏": "a laptop with an external monitor on a desk",
+        "台式显示器": "a desktop computer monitor on a desk",
+        "一体机屏幕": "an all-in-one desktop computer on a desk",
+        "双屏桌面": "a dual-monitor desktop computer setup",
+        "希沃白板": "a large Seewo brand interactive whiteboard mounted on the classroom wall",
+        "教室大屏": "a large classroom display mounted on the wall",
+        "多媒体大屏": "a multimedia classroom display screen",
+        "屏幕区域": "a clean blank screen area for compositing",
+        "纸张区域": "a clean blank paper area for compositing",
+        "A4 竖版纸": "a vertical A4 blank white sheet of paper",
+        "A4 横版纸": "a horizontal A4 blank white sheet of paper",
         "教师办公桌": "on a teacher's office desk in a Chinese school",
         "家里书桌": "on a home study desk in a Chinese household",
         "校园办公室": "in a Chinese school campus office",
@@ -422,6 +445,11 @@ class AIGenerateTab(QWidget):
         "小学教室": "in a Chinese elementary school classroom",
         "中学教室": "in a Chinese middle school classroom",
         "多媒体教室": "in a Chinese multimedia classroom",
+        "教师办公室": "in a Chinese teacher office",
+        "木质桌面": "on a clean wooden desk",
+        "暖光书桌": "on a warm-lit study desk",
+        "冷白办公桌": "on a cool white office desk",
+        "浅色桌面": "on a light-colored clean desk",
         "暖色灯光": "warm amber ambient lighting",
         "自然光": "natural daylight from window",
         "冷白光": "cool white office lighting",
@@ -510,9 +538,9 @@ class AIGenerateTab(QWidget):
         content.setSpacing(10)
 
         content.addWidget(_label("AI 背景图", "h2"))
-        self._target_group = TagGroup("背景用途", _TARGET_TYPES)
-        self._device_group = TagGroup("设备类型", ["笔记本", "台式机", "希沃一体机"])
-        self._scene_group = TagGroup("使用场景", _PERSONAL_SCENES)
+        self._target_group = TagGroup("背景场景", _TARGET_TYPES)
+        self._device_group = TagGroup("主体类型", _TARGET_DEVICES["教师场景"])
+        self._scene_group = TagGroup("环境位置", _TARGET_SCENES["教师场景"])
         self._light_group = TagGroup("灯光", ["暖色灯光", "自然光", "冷白光", "柔光", "偏暗氛围"])
         self._angle_group = TagGroup("拍摄角度", ["正面平视", "略偏侧角", "略微俯视", "略微仰视"])
         self._decor_group = TagGroup("桌面摆件", ["有植物", "有咖啡杯", "有书本", "有小摆件", "极简"])
@@ -538,7 +566,7 @@ class AIGenerateTab(QWidget):
         count_layout = QVBoxLayout(count_box)
         count_layout.setContentsMargins(0, 0, 0, 0)
         count_layout.setSpacing(4)
-        count_layout.addWidget(_label("生成数量", "cap"))
+        count_layout.addWidget(_label("生成张数", "cap"))
         self._count_spin = QSpinBox()
         self._count_spin.setRange(1, 8)
         self._count_spin.setValue(4)
@@ -644,16 +672,13 @@ class AIGenerateTab(QWidget):
         self._save_btn.clicked.connect(self._save_selected)
 
     def _on_target_changed(self, value: str):
-        if value == "希沃白板":
-            self._device_group.set_selection("希沃一体机")
-        elif value == "文档纸张":
-            self._device_group.set_selection("")
+        target = value or "教师场景"
+        self._device_group.replace_options(_TARGET_DEVICES.get(target, _TARGET_DEVICES["自定义场景"]))
+        self._scene_group.replace_options(_TARGET_SCENES.get(target, _TARGET_SCENES["自定义场景"]))
 
     def _on_device_changed(self, value: str):
-        if value == "希沃一体机":
+        if value in ("希沃白板", "教室大屏", "多媒体大屏"):
             self._scene_group.replace_options(_CLASSROOM_SCENES)
-        else:
-            self._scene_group.replace_options(_PERSONAL_SCENES)
 
     def _random_select_unset(self, rng: random.Random | None = None):
         rng = rng or random.Random()
@@ -665,8 +690,8 @@ class AIGenerateTab(QWidget):
         target = self._target_group.get_selection()
         device = self._device_group.get_selection()
         scene = self._scene_group.get_selection()
-        is_document = target == "文档纸张"
-        is_classroom = target in ("教室大屏", "希沃白板") or device == "希沃一体机" or scene in _CLASSROOM_SCENES
+        is_document = self._is_document_target(target, device)
+        is_classroom = device in ("希沃白板", "教室大屏", "多媒体大屏") or scene in _CLASSROOM_SCENES
 
         parts = [
             "A candid realistic photograph shot on a smartphone camera",
@@ -690,16 +715,16 @@ class AIGenerateTab(QWidget):
         if scene:
             parts.append(self._TRANSLATIONS.get(scene, scene))
 
-        # 笔记本/台式机/希沃一体机：屏幕必须是画面主体，占 60-70% 面积
-        if not is_document and device in ("笔记本", "台式机", "希沃一体机"):
+        # 屏幕类场景：屏幕必须是画面主体，占 60-70% 面积
+        if not is_document and device not in ("纸张区域", "A4 竖版纸", "A4 横版纸"):
             parts.append("the screen is the dominant element filling 60-70% of the frame")
             parts.append("close-up composition focused on the screen, minimal surrounding environment")
 
         # Chinese context — classroom vs personal
         if is_classroom and not is_document:
             parts.append("Chinese school classroom with red Chinese national flag hanging on wall above the screen")
-            if device == "希沃一体机":
-                # 希沃一体机：墙上标语保留，但黑板必须干净无板书
+            if device == "希沃白板":
+                # 希沃白板：墙上标语保留，但黑板必须干净无板书
                 parts.append("red educational banners with Chinese calligraphy slogans on the wall near the flag")
                 parts.append("if chalkboard is visible it must be completely clean and blank, absolutely no chalk writing, no handwritten text, no diagrams on the board surface")
             else:
@@ -737,13 +762,16 @@ class AIGenerateTab(QWidget):
 
     def _template_context(self) -> dict:
         target = self._target_group.get_selection()
-        if target == "文档纸张":
-            return {"category": "文档模板", "template_type": "document_paper", "render_preset": "paper"}
-        if target == "电脑背景":
-            return {"category": "电脑背景模板", "template_type": "screen", "render_preset": "clear"}
-        if target == "希沃白板":
-            return {"category": "希沃白板模板", "template_type": "screen", "render_preset": "clear"}
-        return {"category": "教室大屏模板", "template_type": "screen", "render_preset": "clear"}
+        device = self._device_group.get_selection()
+        if self._is_document_target(target, device):
+            return {"category": "文档纸张", "template_type": "document_paper", "render_preset": "paper"}
+        if target in ("台式机电脑", "笔记本室内", "自定义场景"):
+            return {"category": target, "template_type": "screen", "render_preset": "clear"}
+        return {"category": "教师场景", "template_type": "screen", "render_preset": "clear"}
+
+    @staticmethod
+    def _is_document_target(target: str, device: str) -> bool:
+        return target == "文档纸张" or device in ("纸张区域", "A4 竖版纸", "A4 横版纸")
 
     def _generate(self):
         from PyQt6.QtCore import QSettings

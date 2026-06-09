@@ -42,35 +42,52 @@ def main():
         assert tab._count_spin.value() == 4
         assert tab._aspect_combo.currentText() == "3:4"
 
-        tab._device_group.set_selection("希沃一体机")
+        tab._target_group.set_selection("教师场景")
+        tab._device_group.set_selection("希沃白板")
         classroom = tab._scene_group.options()
         assert "小学教室" in classroom
         assert "教师办公桌" not in classroom
 
-        tab._device_group.set_selection("笔记本")
+        tab._target_group.set_selection("笔记本室内")
+        tab._device_group.set_selection("笔记本电脑")
         personal = tab._scene_group.options()
         assert "教师办公桌" in personal
         assert "小学教室" not in personal
+        assert tab._template_context()["category"] == "笔记本室内"
+
+        tab._target_group.set_selection("自定义场景")
+        assert tab._template_context()["category"] == "自定义场景"
+        tab._device_group.set_selection("纸张区域")
+        custom_paper_context = tab._template_context()
+        assert custom_paper_context["category"] == "文档纸张"
+        assert custom_paper_context["template_type"] == "document_paper"
+        assert "paper sheet" in tab._build_prompt()
+        assert "solid matte black" not in tab._build_prompt()
 
         for tag_group in tab._tag_groups:
             tag_group.set_selection("")
         tab._random_select_unset(random.Random(1))
         assert any(tag_group.get_selection() for tag_group in tab._tag_groups)
 
-        tab._target_group.set_selection("教室大屏")
+        tab._target_group.set_selection("教师场景")
         prompt = tab._build_prompt()
         lowered = prompt.lower()
         assert "screen" in lowered
         assert "black" in lowered
+        tab._device_group.set_selection("")
+        tab._scene_group.set_selection("教师办公室")
+        office_prompt = tab._build_prompt()
+        assert "national flag" not in office_prompt
+        assert "chalkboard" not in office_prompt
 
         document_context = {
-            "category": "文档模板",
+            "category": "文档纸张",
             "template_type": "document_paper",
             "render_preset": "paper",
         }
         image = Image.new("RGB", (8, 8), "white")
         tab._load_history_images([image], document_context)
-        tab._target_group.set_selection("教室大屏")
+        tab._target_group.set_selection("教师场景")
         emitted = []
         tab.save_finished.connect(lambda paths, context: emitted.append((paths, context)))
         tab._save_selected()

@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSize, QSettings, QPoint
 from PyQt6.QtGui import QFont, QColor
 
-from models.template_model import Template, TemplateManager
+from models.template_model import Template, TemplateManager, normalize_template_category
 from core.batch_runner import BatchRunner, VideoRunner, get_image_files, natural_sort_key
 from core.screen_detector import detect_screen_points
 from ui.canvas_widget import CanvasWidget
@@ -279,7 +279,7 @@ BATCH_OUTPUT_WIDTH_PRESETS = {
     "4K 3840 宽": 3840,
 }
 
-TEMPLATE_CATEGORIES = ["教室大屏模板", "文档模板", "希沃白板模板", "电脑背景模板"]
+TEMPLATE_CATEGORIES = ["教师场景", "台式机电脑", "笔记本室内", "文档纸张", "自定义场景"]
 TEMPLATE_TYPES = {
     "屏幕 / 大屏": "screen",
     "文档纸张": "document_paper",
@@ -424,7 +424,7 @@ class TemplatePickerDialog(QDialog):
         preselected = set(preselected or [])
         grouped = {}
         for t in all_templates:
-            grouped.setdefault(getattr(t, "category", "教室大屏模板") or "教室大屏模板", []).append(t)
+            grouped.setdefault(getattr(t, "category", "教师场景") or "教师场景", []).append(t)
         for category in sorted(grouped):
             heading = QLabel(category)
             heading.setStyleSheet(f"font-size: 12px; font-weight: 700; color: {_TEXT2}; padding: 6px 4px 2px 4px;")
@@ -552,7 +552,7 @@ class MainWindow(QMainWindow):
         self._batch_output_width = int(self._settings.value("batch_output_width", 1920))
 
         self._build_ui()
-        self._on_template_type_changed()
+        self._on_template_category_changed()
         self._set_batch_mode(0)   # apply initial mode button styles
         self._refresh_template_list()
 
@@ -745,18 +745,16 @@ class MainWindow(QMainWindow):
         fv.addWidget(_lbl("模板分类", "cap"))
         fv.addSpacing(4)
         self.tpl_category_combo = QComboBox()
+        self.tpl_category_combo.setEditable(True)
         self.tpl_category_combo.addItems(TEMPLATE_CATEGORIES)
+        self.tpl_category_combo.currentTextChanged.connect(self._on_template_category_changed)
         fv.addWidget(self.tpl_category_combo)
         fv.addSpacing(10)
 
-        fv.addWidget(_lbl("合成类型", "cap"))
-        fv.addSpacing(4)
         self.tpl_type_combo = QComboBox()
         for label, value in TEMPLATE_TYPES.items():
             self.tpl_type_combo.addItem(label, value)
-        self.tpl_type_combo.currentIndexChanged.connect(self._on_template_type_changed)
-        fv.addWidget(self.tpl_type_combo)
-        fv.addSpacing(10)
+        self.tpl_type_combo.setVisible(False)
 
         self.tpl_preset_label = _lbl("文档预设", "cap")
         fv.addWidget(self.tpl_preset_label)
@@ -1165,9 +1163,9 @@ class MainWindow(QMainWindow):
         self._new_template()
         self.bg_path_edit.setText(first)
         self.canvas.set_background(first)
-        self._set_template_category(context.get("category", "教室大屏模板"))
-        self._set_template_type(context.get("template_type", "screen"))
+        self._set_template_category(context.get("category", "教师场景"))
         self._set_document_preset(context.get("render_preset", "clear"))
+        self._on_template_category_changed()
         self._update_auto_detect_enabled()
         self._save_dir("bg", os.path.dirname(first))
 
@@ -1177,12 +1175,12 @@ class MainWindow(QMainWindow):
         self.template_list.clear()
         for t in self.tm.load_all():
             loaded = self.tm.load(t.name) or t
-            category = getattr(loaded, "category", "教室大屏模板") or "教室大屏模板"
+            category = getattr(loaded, "category", "教师场景") or "教师场景"
             marker = "⚠ " if loaded.is_broken else ""
             text = f"{marker}{loaded.name}  ·  {category}"
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, loaded.name)
-            item.setToolTip(f"{category} · {getattr(loaded, 'template_type', 'screen')}")
+            item.setToolTip(category)
             if loaded.is_broken:
                 item.setForeground(QColor(_RED))
                 item.setToolTip("此模板的背景图已不存在，请重新选择背景图")
@@ -1197,8 +1195,7 @@ class MainWindow(QMainWindow):
         self._loaded_tpl_name = name
         self.tpl_name_edit.setText(tpl.name)
         self.bg_path_edit.setText(tpl.background_path)
-        self._set_template_category(getattr(tpl, "category", "教室大屏模板"))
-        self._set_template_type(getattr(tpl, "template_type", "screen"))
+        self._set_template_category(getattr(tpl, "category", "教师场景"))
         self._set_document_preset(getattr(tpl, "render_preset", "clear"))
         if os.path.exists(tpl.background_path):
             self.canvas.set_background(tpl.background_path)
@@ -1228,28 +1225,37 @@ class MainWindow(QMainWindow):
         self.tpl_name_edit.clear()
         self.bg_path_edit.clear()
         self.preview_path_edit.clear()
-        self._set_template_category("教室大屏模板")
-        self._set_template_type("screen")
+        self._set_template_category("教师场景")
         self._set_document_preset("clear")
         self.canvas.clear_all()
         self._update_auto_detect_enabled()
 
     def _set_template_category(self, category: str):
+        category = normalize_template_category(category)
         if category not in TEMPLATE_CATEGORIES:
             self.tpl_category_combo.addItem(category)
-        self.tpl_category_combo.setCurrentText(category or "教室大屏模板")
+        self.tpl_category_combo.setCurrentText(category or "教师场景")
+        self._on_template_category_changed()
 
     def _set_template_type(self, template_type: str):
         idx = self.tpl_type_combo.findData(template_type or "screen")
         self.tpl_type_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self._on_template_type_changed()
+        self._on_template_category_changed()
 
     def _set_document_preset(self, render_preset: str):
         idx = self.tpl_preset_combo.findData(render_preset or "clear")
         self.tpl_preset_combo.setCurrentIndex(idx if idx >= 0 else 0)
 
-    def _on_template_type_changed(self, *_):
-        is_document = self.tpl_type_combo.currentData() == "document_paper"
+    def _current_template_type(self) -> str:
+        category = normalize_template_category(self.tpl_category_combo.currentText())
+        return "document_paper" if category == "文档纸张" else "screen"
+
+    def _on_template_category_changed(self, *_):
+        template_type = self._current_template_type()
+        idx = self.tpl_type_combo.findData(template_type)
+        if idx >= 0:
+            self.tpl_type_combo.setCurrentIndex(idx)
+        is_document = template_type == "document_paper"
         self.tpl_preset_label.setVisible(is_document)
         self.tpl_preset_combo.setVisible(is_document)
 
@@ -1516,16 +1522,17 @@ class MainWindow(QMainWindow):
                 return
 
         w, h = self._editor_output_size()
-        template_type = self.tpl_type_combo.currentData() or "screen"
+        category = self.tpl_category_combo.currentText().strip() or "教师场景"
+        template_type = self._current_template_type()
         self.tm.save(Template(
             name,
             bg,
             self.canvas.points,
             w,
             h,
-            category=self.tpl_category_combo.currentText() or "教室大屏模板",
+            category=category,
             template_type=template_type,
-            render_preset=self.tpl_preset_combo.currentData() or "clear",
+            render_preset=(self.tpl_preset_combo.currentData() if template_type == "document_paper" else "clear") or "clear",
         ))
         self._loaded_tpl_name = name
         self._refresh_template_list()

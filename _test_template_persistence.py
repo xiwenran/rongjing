@@ -73,7 +73,7 @@ def test_save_external_background_copies_and_existing_background_is_direct():
         data = read_json(os.path.join(templates_dir, "教室1.json"))
         dst = os.path.join(backgrounds_dir, "教室1_bg.jpg")
         assert data["background_path"] == dst
-        assert data["category"] == "教室大屏模板"
+        assert data["category"] == "教师场景"
         assert data["template_type"] == "screen"
         assert data["render_preset"] == "clear"
         assert os.path.exists(dst)
@@ -104,7 +104,7 @@ def test_new_template_fields_persist_and_load():
         ))
 
         loaded = manager.load("文档模板1")
-        assert loaded.category == "文档模板"
+        assert loaded.category == "文档纸张"
         assert loaded.template_type == "document_paper"
         assert loaded.render_preset == "warm"
 
@@ -127,7 +127,7 @@ def test_old_json_defaults_to_screen_template_fields():
 
         manager = TemplateManager(templates_dir, backgrounds_dir=backgrounds_dir)
         loaded = manager.load("旧字段模板")
-        assert loaded.category == "教室大屏模板"
+        assert loaded.category == "教师场景"
         assert loaded.template_type == "screen"
         assert loaded.render_preset == "clear"
 
