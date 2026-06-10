@@ -35,7 +35,7 @@ def test_document_presets_keep_size_and_differ():
     assert not np.array_equal(np.array(clear), np.array(warm))
 
 
-def test_document_white_area_keeps_page_but_gets_photo_light():
+def test_document_multiply_blends_white_and_keeps_color_content():
     paper = Image.new("RGB", (80, 100), "white")
     draw = ImageDraw.Draw(paper)
     draw.rectangle([20, 20, 60, 70], fill=(20, 120, 40))
@@ -48,9 +48,12 @@ def test_document_white_area_keeps_page_but_gets_photo_light():
 
     white_region = arr[25:32, 35:42].mean(axis=(0, 1))
     bg_region = bg_arr[25:32, 35:42].mean(axis=(0, 1))
-    assert white_region.mean() > bg_region.mean() + 12
-    assert white_region.mean() < 250
-    assert np.linalg.norm(white_region - bg_region) > 25
+    color_region = arr[45:55, 70:82].mean(axis=(0, 1))
+    color_bg_region = bg_arr[45:55, 70:82].mean(axis=(0, 1))
+
+    assert white_region.mean() > bg_region.mean() + 15
+    assert white_region.mean() < 245
+    assert np.linalg.norm(color_region - color_bg_region) > 35
 
 
 def test_screen_fast_path_still_callable():
@@ -64,7 +67,7 @@ def test_screen_fast_path_still_callable():
 
 def run_tests():
     test_document_presets_keep_size_and_differ()
-    test_document_white_area_keeps_page_but_gets_photo_light()
+    test_document_multiply_blends_white_and_keeps_color_content()
     test_screen_fast_path_still_callable()
     print("document paper tests passed")
 

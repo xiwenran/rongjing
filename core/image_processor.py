@@ -223,58 +223,57 @@ def embed_document_paper_pil(
     warped_arr = np.array(warped, dtype=np.float32)
     mask_f = np.array(mask, dtype=np.float32)[:, :, np.newaxis] / 255.0
 
-    bg_luma_img = Image.fromarray(
-        np.clip(
-            0.299 * bg_arr[:, :, 0]
-            + 0.587 * bg_arr[:, :, 1]
-            + 0.114 * bg_arr[:, :, 2],
-            0,
-            255,
-        ).astype(np.uint8),
-        "L",
-    ).filter(ImageFilter.GaussianBlur(max(bg_w, bg_h) * 0.018))
-    bg_luma = np.array(bg_luma_img, dtype=np.float32)[:, :, np.newaxis] / 255.0
+    src_luma = (
+        0.299 * warped_arr[:, :, 0]
+        + 0.587 * warped_arr[:, :, 1]
+        + 0.114 * warped_arr[:, :, 2]
+    )[:, :, np.newaxis] / 255.0
+    src_sat = (
+        warped_arr.max(axis=2, keepdims=True)
+        - warped_arr.min(axis=2, keepdims=True)
+    ) / 255.0
 
-    bg_soft_img = bg_img.filter(ImageFilter.GaussianBlur(max(bg_w, bg_h) * 0.012))
-    bg_soft = np.array(bg_soft_img, dtype=np.float32)
-    bg_texture = np.clip(bg_arr - bg_soft, -28.0, 28.0)
+    bg_luma = (
+        0.299 * bg_arr[:, :, 0]
+        + 0.587 * bg_arr[:, :, 1]
+        + 0.114 * bg_arr[:, :, 2]
+    )[:, :, np.newaxis]
+    paper_luma = bg_luma[mask_f[:, :, :1] > 0.35]
+    paper_white = float(np.percentile(paper_luma, 82)) if paper_luma.size else 220.0
+    white_scale = np.clip(238.0 / max(paper_white, 1.0), 0.88, 1.42)
+    paper_base = np.clip(bg_arr * white_scale, 0, 255)
 
-    shade = 0.82 + bg_luma * 0.34
-    shade = shade / max(float(shade[mask_f[:, :, :1] > 0.4].mean()), 0.01)
-    shade = np.clip(shade, 0.72, 1.18)
+    multiply = paper_base * warped_arr / 255.0
+    content = np.clip((1.0 - src_luma) * 2.2 + src_sat * 1.25, 0.0, 1.0)
+    content = np.power(content, 0.72)
 
     if preset == "paper":
-        texture_weight = 0.16
-        bg_bleed = 0.055
-        contrast = 0.985
-        alpha = 0.985
-        noise_sigma = 1.15
-        cast = np.array([0.0, -1.0, -3.0], dtype=np.float32)
+        restore = np.clip(0.28 + src_sat * 0.42 + (1.0 - src_luma) * 0.18, 0.0, 0.64)
+        page = multiply * (1.0 - restore * content) + warped_arr * (restore * content)
+        alpha = 0.997
+        noise_sigma = 0.75
+        blur_radius = 0.12
+        cast = np.array([0.0, -1.0, -2.0], dtype=np.float32)
     elif preset == "warm":
-        texture_weight = 0.13
-        bg_bleed = 0.06
-        contrast = 0.98
-        alpha = 0.982
-        noise_sigma = 1.0
-        cast = np.array([6.0, 2.0, -5.0], dtype=np.float32)
-    else:
-        texture_weight = 0.09
-        bg_bleed = 0.035
-        contrast = 1.0
-        alpha = 0.992
+        restore = np.clip(0.30 + src_sat * 0.38 + (1.0 - src_luma) * 0.16, 0.0, 0.60)
+        page = multiply * (1.0 - restore * content) + warped_arr * (restore * content)
+        alpha = 0.996
         noise_sigma = 0.65
+        blur_radius = 0.14
+        cast = np.array([5.0, 2.0, -4.0], dtype=np.float32)
+    else:
+        restore = np.clip(0.34 + src_sat * 0.36 + (1.0 - src_luma) * 0.14, 0.0, 0.62)
+        page = multiply * (1.0 - restore * content) + warped_arr * (restore * content)
+        alpha = 0.998
+        noise_sigma = 0.45
+        blur_radius = 0.08
         cast = np.array([0.0, 0.0, 0.0], dtype=np.float32)
 
-    page = (warped_arr - 128.0) * contrast + 128.0
-    page = page * shade + bg_texture * texture_weight + bg_arr * bg_bleed + cast
-    if bg_bleed:
-        page = page / (1.0 + bg_bleed)
-
+    page = page + cast
     rng = np.random.default_rng(17 if preset == "paper" else 23 if preset == "warm" else 11)
-    noise = rng.normal(0, noise_sigma, (bg_h, bg_w, 1)).astype(np.float32)
-    page = page + noise
+    page = page + rng.normal(0, noise_sigma, (bg_h, bg_w, 1)).astype(np.float32)
     page_img = Image.fromarray(np.clip(page, 0, 255).astype(np.uint8), "RGB")
-    page = np.array(page_img.filter(ImageFilter.GaussianBlur(0.18)), dtype=np.float32)
+    page = np.array(page_img.filter(ImageFilter.GaussianBlur(blur_radius)), dtype=np.float32)
     blend_f = mask_f * alpha
     result = (1.0 - blend_f) * bg_arr + blend_f * page
     return Image.fromarray(np.clip(result, 0, 255).astype(np.uint8), "RGB")
