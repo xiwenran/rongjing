@@ -745,10 +745,15 @@ class MainWindow(QMainWindow):
         fv.addWidget(_lbl("模板分类", "cap"))
         fv.addSpacing(4)
         self.tpl_category_combo = QComboBox()
-        self.tpl_category_combo.setEditable(True)
         self.tpl_category_combo.addItems(TEMPLATE_CATEGORIES)
         self.tpl_category_combo.currentTextChanged.connect(self._on_template_category_changed)
+        self.tpl_category_combo.activated.connect(self._on_template_category_preset_activated)
         fv.addWidget(self.tpl_category_combo)
+        fv.addSpacing(4)
+        self.tpl_custom_category_edit = QLineEdit()
+        self.tpl_custom_category_edit.setPlaceholderText("自定义分类（可选，不填则使用上方预设）")
+        self.tpl_custom_category_edit.textChanged.connect(self._on_template_category_changed)
+        fv.addWidget(self.tpl_custom_category_edit)
         fv.addSpacing(10)
 
         self.tpl_type_combo = QComboBox()
@@ -1232,9 +1237,12 @@ class MainWindow(QMainWindow):
 
     def _set_template_category(self, category: str):
         category = normalize_template_category(category)
-        if category not in TEMPLATE_CATEGORIES:
-            self.tpl_category_combo.addItem(category)
-        self.tpl_category_combo.setCurrentText(category or "教师场景")
+        if category in TEMPLATE_CATEGORIES:
+            self.tpl_custom_category_edit.clear()
+            self.tpl_category_combo.setCurrentText(category or "教师场景")
+        else:
+            self.tpl_category_combo.setCurrentText("自定义场景")
+            self.tpl_custom_category_edit.setText(category)
         self._on_template_category_changed()
 
     def _set_template_type(self, template_type: str):
@@ -1247,8 +1255,16 @@ class MainWindow(QMainWindow):
         self.tpl_preset_combo.setCurrentIndex(idx if idx >= 0 else 0)
 
     def _current_template_type(self) -> str:
-        category = normalize_template_category(self.tpl_category_combo.currentText())
+        category = normalize_template_category(self._selected_template_category())
         return "document_paper" if category == "文档纸张" else "screen"
+
+    def _selected_template_category(self) -> str:
+        custom = self.tpl_custom_category_edit.text().strip()
+        return custom or self.tpl_category_combo.currentText().strip() or "教师场景"
+
+    def _on_template_category_preset_activated(self, *_):
+        if self.tpl_custom_category_edit.text().strip():
+            self.tpl_custom_category_edit.clear()
 
     def _on_template_category_changed(self, *_):
         template_type = self._current_template_type()
@@ -1522,7 +1538,7 @@ class MainWindow(QMainWindow):
                 return
 
         w, h = self._editor_output_size()
-        category = self.tpl_category_combo.currentText().strip() or "教师场景"
+        category = self._selected_template_category()
         template_type = self._current_template_type()
         self.tm.save(Template(
             name,
