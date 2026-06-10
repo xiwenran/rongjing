@@ -51,8 +51,7 @@ def test_document_multiply_blends_white_and_keeps_color_content():
     color_region = arr[45:55, 70:82].mean(axis=(0, 1))
     color_bg_region = bg_arr[45:55, 70:82].mean(axis=(0, 1))
 
-    assert white_region.mean() > bg_region.mean() + 15
-    assert white_region.mean() < 245
+    assert np.linalg.norm(white_region - bg_region) < 8
     assert np.linalg.norm(color_region - color_bg_region) > 35
 
 

@@ -217,9 +217,7 @@ def embed_document_paper_pil(
     )
     edge_fade = _document_edge_fade_mask(paper_w, paper_h, bg_w, bg_h, coeffs)
 
-    mask = Image.new("L", (bg_w, bg_h), 0)
-    draw = ImageDraw.Draw(mask)
-    draw.polygon([(float(p[0]), float(p[1])) for p in dst_pts], fill=255)
+    mask = _polygon_mask((bg_w, bg_h), dst_pts)
     if feather > 0:
         mask_orig = np.array(mask)
         mask = mask.filter(ImageFilter.MinFilter(3))
@@ -242,38 +240,29 @@ def embed_document_paper_pil(
         - warped_arr.min(axis=2, keepdims=True)
     ) / 255.0
 
-    bg_luma = (
-        0.299 * bg_arr[:, :, 0]
-        + 0.587 * bg_arr[:, :, 1]
-        + 0.114 * bg_arr[:, :, 2]
-    )[:, :, np.newaxis]
-    paper_luma = bg_luma[mask_f[:, :, :1] > 0.35]
-    paper_white = float(np.percentile(paper_luma, 82)) if paper_luma.size else 220.0
-    white_scale = np.clip(238.0 / max(paper_white, 1.0), 0.88, 1.42)
-    paper_base = np.clip(bg_arr * white_scale, 0, 255)
-
-    multiply = paper_base * warped_arr / 255.0
+    ink = np.clip(warped_arr / 255.0, 0.0, 1.0)
+    multiply = bg_arr * np.clip(0.08 + ink * 0.92, 0.0, 1.0)
     content = np.clip((1.0 - src_luma) * 2.2 + src_sat * 1.25, 0.0, 1.0)
     content = np.power(content, 0.72)
 
     if preset == "paper":
-        restore = np.clip(0.28 + src_sat * 0.42 + (1.0 - src_luma) * 0.18, 0.0, 0.64)
+        restore = np.clip(0.08 + src_sat * 0.16 + (1.0 - src_luma) * 0.08, 0.0, 0.28)
         page = multiply * (1.0 - restore * content) + warped_arr * (restore * content)
-        alpha = 0.997
+        alpha = 0.96
         noise_sigma = 0.75
         blur_radius = 0.12
         cast = np.array([0.0, -1.0, -2.0], dtype=np.float32)
     elif preset == "warm":
-        restore = np.clip(0.30 + src_sat * 0.38 + (1.0 - src_luma) * 0.16, 0.0, 0.60)
+        restore = np.clip(0.08 + src_sat * 0.15 + (1.0 - src_luma) * 0.08, 0.0, 0.26)
         page = multiply * (1.0 - restore * content) + warped_arr * (restore * content)
-        alpha = 0.996
+        alpha = 0.95
         noise_sigma = 0.65
         blur_radius = 0.14
         cast = np.array([5.0, 2.0, -4.0], dtype=np.float32)
     else:
-        restore = np.clip(0.34 + src_sat * 0.36 + (1.0 - src_luma) * 0.14, 0.0, 0.62)
+        restore = np.clip(0.10 + src_sat * 0.16 + (1.0 - src_luma) * 0.07, 0.0, 0.28)
         page = multiply * (1.0 - restore * content) + warped_arr * (restore * content)
-        alpha = 0.998
+        alpha = 0.96
         noise_sigma = 0.45
         blur_radius = 0.08
         cast = np.array([0.0, 0.0, 0.0], dtype=np.float32)
@@ -287,6 +276,13 @@ def embed_document_paper_pil(
     blend_f = mask_f * edge_fade * alpha
     result = (1.0 - blend_f) * bg_arr + blend_f * page
     return Image.fromarray(np.clip(result, 0, 255).astype(np.uint8), "RGB")
+
+
+def _polygon_mask(size: tuple, pts: np.ndarray) -> Image.Image:
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.polygon([(float(p[0]), float(p[1])) for p in pts], fill=255)
+    return mask
 
 
 def _document_edge_fade_mask(
