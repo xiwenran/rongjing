@@ -214,6 +214,7 @@ def embed_document_paper_pil(
     warped = paper_img.transform(
         (bg_w, bg_h), Image.PERSPECTIVE, coeffs, Image.BILINEAR
     )
+    edge_fade = _document_edge_fade_mask(paper_w, paper_h, bg_w, bg_h, coeffs)
 
     mask = Image.new("L", (bg_w, bg_h), 0)
     draw = ImageDraw.Draw(mask)
@@ -279,11 +280,33 @@ def embed_document_paper_pil(
     page = page + cast
     rng = np.random.default_rng(17 if preset == "paper" else 23 if preset == "warm" else 11)
     page = page + rng.normal(0, noise_sigma, (bg_h, bg_w, 1)).astype(np.float32)
+    page = (page - 128.0) * 0.985 + 128.0
     page_img = Image.fromarray(np.clip(page, 0, 255).astype(np.uint8), "RGB")
     page = np.array(page_img.filter(ImageFilter.GaussianBlur(blur_radius)), dtype=np.float32)
-    blend_f = mask_f * alpha
+    blend_f = mask_f * edge_fade * alpha
     result = (1.0 - blend_f) * bg_arr + blend_f * page
     return Image.fromarray(np.clip(result, 0, 255).astype(np.uint8), "RGB")
+
+
+def _document_edge_fade_mask(
+    src_w: int,
+    src_h: int,
+    bg_w: int,
+    bg_h: int,
+    coeffs: tuple,
+    fade_ratio: float = 0.015,
+) -> np.ndarray:
+    fade_x = max(2, int(src_w * fade_ratio))
+    fade_y = max(2, int(src_h * fade_ratio))
+    mask = Image.new("L", (src_w, src_h), 255)
+    arr = np.array(mask, dtype=np.float32)
+    x = np.minimum(np.arange(src_w), np.arange(src_w)[::-1])
+    y = np.minimum(np.arange(src_h), np.arange(src_h)[::-1])
+    edge = np.minimum(x[np.newaxis, :] / fade_x, y[:, np.newaxis] / fade_y)
+    arr *= np.clip(edge, 0.0, 1.0)
+    mask = Image.fromarray(arr.astype(np.uint8), "L")
+    warped = mask.transform((bg_w, bg_h), Image.PERSPECTIVE, coeffs, Image.BILINEAR)
+    return np.array(warped, dtype=np.float32)[:, :, np.newaxis] / 255.0
 
 
 def embed_image(
