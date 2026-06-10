@@ -295,7 +295,7 @@ def _document_edge_fade_mask(
     bg_w: int,
     bg_h: int,
     coeffs: tuple,
-    fade_ratio: float = 0.015,
+    fade_ratio: float = 0.008,
 ) -> np.ndarray:
     fade_x = max(2, int(src_w * fade_ratio))
     fade_y = max(2, int(src_h * fade_ratio))
@@ -312,8 +312,8 @@ def _document_edge_fade_mask(
 
 def _suppress_document_edge_lines(
     image: Image.Image,
-    band_ratio: float = 0.035,
-    strength: float = 0.62,
+    band_ratio: float = 0.022,
+    strength: float = 0.42,
 ) -> Image.Image:
     """Fade low-saturation gray guide lines near document edges only."""
     arr = np.array(image.convert("RGB"), dtype=np.float32)
