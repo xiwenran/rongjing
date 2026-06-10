@@ -182,8 +182,15 @@ def embed_document_paper_pil(
     """
     paper_img = paper_img.convert("RGB")
     bg_img = bg_img.convert("RGB")
-    bg_w, bg_h = bg_img.size
     paper_w, paper_h = paper_img.size
+
+    trim_x = max(2, int(paper_w * 0.006))
+    trim_y = max(1, int(paper_h * 0.003))
+    if paper_w > trim_x * 2 and paper_h > trim_y * 2:
+        paper_img = paper_img.crop((trim_x, trim_y, paper_w - trim_x, paper_h - trim_y))
+        paper_w, paper_h = paper_img.size
+
+    bg_w, bg_h = bg_img.size
 
     preset = (render_preset or "clear").lower()
     if preset == "paper":
