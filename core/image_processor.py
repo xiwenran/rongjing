@@ -189,6 +189,7 @@ def embed_document_paper_pil(
     if paper_w > trim_x * 2 and paper_h > trim_y * 2:
         paper_img = paper_img.crop((trim_x, trim_y, paper_w - trim_x, paper_h - trim_y))
         paper_w, paper_h = paper_img.size
+    paper_img = _suppress_document_edge_lines(paper_img)
 
     bg_w, bg_h = bg_img.size
 
@@ -307,6 +308,36 @@ def _document_edge_fade_mask(
     mask = Image.fromarray(arr.astype(np.uint8), "L")
     warped = mask.transform((bg_w, bg_h), Image.PERSPECTIVE, coeffs, Image.BILINEAR)
     return np.array(warped, dtype=np.float32)[:, :, np.newaxis] / 255.0
+
+
+def _suppress_document_edge_lines(
+    image: Image.Image,
+    band_ratio: float = 0.035,
+    strength: float = 0.62,
+) -> Image.Image:
+    """Fade low-saturation gray guide lines near document edges only."""
+    arr = np.array(image.convert("RGB"), dtype=np.float32)
+    h, w = arr.shape[:2]
+    band_x = max(4, int(w * band_ratio))
+    band_y = max(4, int(h * band_ratio))
+
+    x_dist = np.minimum(np.arange(w), np.arange(w)[::-1])
+    y_dist = np.minimum(np.arange(h), np.arange(h)[::-1])
+    edge_band = np.maximum(
+        np.clip(1.0 - x_dist[np.newaxis, :] / band_x, 0.0, 1.0),
+        np.clip(1.0 - y_dist[:, np.newaxis] / band_y, 0.0, 1.0),
+    )[:, :, np.newaxis]
+
+    luma = (
+        0.299 * arr[:, :, 0]
+        + 0.587 * arr[:, :, 1]
+        + 0.114 * arr[:, :, 2]
+    )[:, :, np.newaxis]
+    sat = (arr.max(axis=2, keepdims=True) - arr.min(axis=2, keepdims=True)) / 255.0
+    gray_line = np.clip((1.0 - sat * 7.0) * (1.0 - np.abs(luma - 188.0) / 78.0), 0.0, 1.0)
+    fade = edge_band * gray_line * strength
+    arr = arr * (1.0 - fade) + 255.0 * fade
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
 
 
 def embed_image(
