@@ -20,6 +20,7 @@ from PyQt6.QtGui import QFont, QColor
 
 from models.template_model import Template, TemplateManager, normalize_template_category
 from core.batch_runner import BatchRunner, VideoRunner, get_image_files, natural_sort_key
+from core.ai_background import normalize_base_url
 from core.screen_detector import detect_screen_points
 from ui.canvas_widget import CanvasWidget
 
@@ -1154,10 +1155,43 @@ class MainWindow(QMainWindow):
 
     def _save_ai_setting(self, key: str, edit: QLineEdit, default: str):
         value = edit.text().strip()
+        if self._try_apply_ai_connection_json(value):
+            return
+        if key == "ai/base_url":
+            value = normalize_base_url(value or default)
+            edit.setText(value)
         if not value and default:
             value = default
             edit.setText(default)
         self._settings.setValue(key, value)
+
+    def _try_apply_ai_connection_json(self, value: str) -> bool:
+        if not value.startswith("{"):
+            return False
+        try:
+            payload = json.loads(value)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(payload, dict):
+            return False
+
+        api_key = str(payload.get("key") or payload.get("api_key") or "").strip()
+        base_url = str(payload.get("url") or payload.get("base_url") or "").strip()
+        model = str(payload.get("model") or "").strip()
+        if not api_key and not base_url and not model:
+            return False
+
+        if api_key:
+            self.ai_api_key_edit.setText(api_key)
+            self._settings.setValue("ai/api_key", api_key)
+        if base_url:
+            normalized = normalize_base_url(base_url)
+            self.ai_base_url_edit.setText(normalized)
+            self._settings.setValue("ai/base_url", normalized)
+        if model:
+            self.ai_model_edit.setText(model)
+            self._settings.setValue("ai/model", model)
+        return True
 
     def _on_ai_backgrounds_saved(self, saved_paths: list, context: dict | None = None):
         if not saved_paths:

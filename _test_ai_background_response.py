@@ -4,7 +4,7 @@ import json
 
 from PIL import Image
 
-from core.ai_background import AIBackgroundError, _response_data
+from core.ai_background import AIBackgroundError, _response_data, normalize_base_url
 
 
 def _tiny_png_b64() -> str:
@@ -14,6 +14,11 @@ def _tiny_png_b64() -> str:
 
 
 def main():
+    assert normalize_base_url("https://api.tu-zi.com") == "https://api.tu-zi.com/v1"
+    assert normalize_base_url("https://api.tu-zi.com/") == "https://api.tu-zi.com/v1"
+    assert normalize_base_url("https://api.tu-zi.com/v1") == "https://api.tu-zi.com/v1"
+    assert normalize_base_url('{"url":"https://api.tu-zi.com"}') == "https://api.tu-zi.com/v1"
+
     payload = {"data": [{"b64_json": _tiny_png_b64()}]}
     assert _response_data(payload)[0]["b64_json"]
     assert _response_data(json.dumps(payload))[0]["b64_json"]

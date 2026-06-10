@@ -40,6 +40,36 @@ class AIConfig:
     timeout: float = 120.0
 
 
+def normalize_base_url(base_url: str) -> str:
+    """Normalize OpenAI-compatible base URLs.
+
+    Many third-party providers show a root domain in connection JSON, but the
+    OpenAI SDK expects the API root, usually ending with /v1.
+    """
+    from urllib.parse import urlparse, urlunparse
+
+    text = str(base_url or "").strip()
+    if not text:
+        return "https://api.openai.com/v1"
+
+    try:
+        if text.startswith("{"):
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                text = str(payload.get("url") or payload.get("base_url") or text).strip()
+    except json.JSONDecodeError:
+        pass
+
+    text = text.rstrip("/")
+    parsed = urlparse(text)
+    if not parsed.scheme or not parsed.netloc:
+        return text
+    path = parsed.path.rstrip("/")
+    if not path:
+        path = "/v1"
+    return urlunparse(parsed._replace(path=path))
+
+
 # ── 比例 → size 映射 ────────────────────────────────────────────────
 # gpt-image-2 支持自定义尺寸（宽高均为 16 的倍数，比例 1:3~3:1，总像素 65 万~830 万）
 SIZE_MAP_BY_MODEL = {
@@ -206,10 +236,11 @@ def generate_backgrounds(
     except ImportError:
         raise AIBackgroundError("openai SDK 未安装，请运行 `pip install openai`")
 
-    http_client = _build_http_client(config.base_url, config.timeout)
+    base_url = normalize_base_url(config.base_url)
+    http_client = _build_http_client(base_url, config.timeout)
     client = OpenAI(
         api_key=config.api_key,
-        base_url=config.base_url,
+        base_url=base_url,
         http_client=http_client,
     )
 
@@ -231,10 +262,10 @@ def generate_backgrounds(
                 raise AIQuotaError(f"配额耗尽: {e}") from e
             raise AIRateLimitError(f"限流: {e}") from e
         except (APIConnectionError, APITimeoutError) as e:
-            detail = _format_network_error(e, config.base_url)
+            detail = _format_network_error(e, base_url)
             raise AINetworkError(detail) from e
         except NotFoundError as e:
-            raise AIBaseURLError(f"模型 '{config.model}' 不存在或 Base URL '{config.base_url}' 不支持图像生成: {e}") from e
+            raise AIBaseURLError(f"模型 '{config.model}' 不存在或 Base URL '{base_url}' 不支持图像生成: {e}") from e
         except BadRequestError as e:
             raise AIBackgroundError(f"参数错误: {e}") from e
         except Exception as e:
