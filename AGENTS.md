@@ -228,6 +228,7 @@ _RED   = "#FA5151"   # 危险色
 18. **文档纸张模板边界**：视频模式只允许 screen 模板；document_paper 以可读性和自然纸面融合为优先，不做 OCR、文字识别或内容修复
 19. **PyInstaller 不要 `--collect-all cv2`**：自动角点识别只需要懒加载 `cv2`，打包脚本保留 `--hidden-import cv2` 即可；`--collect-all cv2` 会让 PyInstaller 收集 OpenCV 全量资源，容易在 macOS 上被 `Killed: 9` 杀掉
 20. **打包入口不要要求用户记命令**：`打包融景.command` 只保留为终端备用入口；面向用户优先提供 `打包融景启动器.app`，双击后自动打开 Terminal 执行 `scripts/package_rongjing.sh`
+21. **AI 背景返回格式不能只认 `.data`**：兼容 OpenAI 或第三方 Base URL 时，图片结果可能是 SDK 对象、dict、JSON 字符串，或放在 `output[].result`；解析时要同时兼容 `b64_json` / `result` / `url`，否则会出现 `'str' object has no attribute 'data'` 或空结果。
 
 ---
 

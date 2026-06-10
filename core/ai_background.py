@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 import io
+import json
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Any, Optional, List
 from PIL import Image
 
 
@@ -144,6 +145,54 @@ def _format_network_error(e: Exception, base_url: str) -> str:
     return f"{reason}。Base URL: {base_url}。底层异常: {type(root).__name__}: {root}"
 
 
+def _response_data(resp: Any) -> list:
+    """Extract image result items from SDK, dict, or JSON-string responses."""
+    if isinstance(resp, str):
+        try:
+            resp = json.loads(resp)
+        except json.JSONDecodeError as exc:
+            raise AIBackgroundError(
+                "API 返回了纯文本，无法解析为图片数据。请检查 Base URL 是否指向兼容 OpenAI Images API 的地址。"
+            ) from exc
+
+    if isinstance(resp, dict):
+        data = resp.get("data")
+        output_items = _output_image_items(resp.get("output"))
+        if isinstance(data, list) and data:
+            return data
+        if output_items:
+            return output_items
+        if isinstance(data, list):
+            return data
+        raise AIBackgroundError("API 返回格式无法解析（缺少 data 数组）")
+
+    data = getattr(resp, "data", None)
+    output_items = _output_image_items(getattr(resp, "output", None))
+    if isinstance(data, list) and data:
+        return data
+    if output_items:
+        return output_items
+    if isinstance(data, list):
+        return data
+    raise AIBackgroundError("API 返回格式无法解析（缺少 data 数组）")
+
+
+def _output_image_items(output: Any) -> list:
+    if not isinstance(output, list):
+        return []
+    return [item for item in output if _has_image_value(item)]
+
+
+def _has_image_value(item: Any) -> bool:
+    return bool(_item_value(item, "b64_json") or _item_value(item, "result") or _item_value(item, "url"))
+
+
+def _item_value(item: Any, key: str):
+    if isinstance(item, dict):
+        return item.get(key)
+    return getattr(item, key, None)
+
+
 # ── 核心 API ─────────────────────────────────────────────────────────
 def generate_backgrounds(
     config: AIConfig,
@@ -194,14 +243,18 @@ def generate_backgrounds(
         http_client.close()
 
     images = []
-    for item in resp.data:
-        if hasattr(item, "b64_json") and item.b64_json:
+    for item in _response_data(resp):
+        b64_json = _item_value(item, "b64_json")
+        if not b64_json:
+            b64_json = _item_value(item, "result")
+        url = _item_value(item, "url")
+        if b64_json:
             import base64
-            img_bytes = base64.b64decode(item.b64_json)
+            img_bytes = base64.b64decode(b64_json)
             img = Image.open(io.BytesIO(img_bytes))
-        elif hasattr(item, "url") and item.url:
+        elif url:
             import urllib.request
-            req = urllib.request.Request(item.url, headers={"User-Agent": "rongjing/2.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "rongjing/2.0"})
             with urllib.request.urlopen(req, timeout=config.timeout) as r:
                 img = Image.open(io.BytesIO(r.read()))
         else:
