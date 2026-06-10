@@ -35,6 +35,24 @@ def test_document_presets_keep_size_and_differ():
     assert not np.array_equal(np.array(clear), np.array(warm))
 
 
+def test_document_white_area_keeps_page_but_gets_photo_light():
+    paper = Image.new("RGB", (80, 100), "white")
+    draw = ImageDraw.Draw(paper)
+    draw.rectangle([20, 20, 60, 70], fill=(20, 120, 40))
+    bg = make_background()
+    points = [[24, 12], [136, 18], [130, 110], [28, 104]]
+
+    result = embed_document_paper_pil(paper, bg, points, "paper")
+    arr = np.array(result, dtype=np.float32)
+    bg_arr = np.array(bg, dtype=np.float32)
+
+    white_region = arr[25:32, 35:42].mean(axis=(0, 1))
+    bg_region = bg_arr[25:32, 35:42].mean(axis=(0, 1))
+    assert white_region.mean() > bg_region.mean() + 12
+    assert white_region.mean() < 250
+    assert np.linalg.norm(white_region - bg_region) > 25
+
+
 def test_screen_fast_path_still_callable():
     ppt = Image.new("RGB", (40, 30), (180, 120, 40))
     bg = Image.new("RGB", (80, 60), (20, 40, 60))
@@ -46,6 +64,7 @@ def test_screen_fast_path_still_callable():
 
 def run_tests():
     test_document_presets_keep_size_and_differ()
+    test_document_white_area_keeps_page_but_gets_photo_light()
     test_screen_fast_path_still_callable()
     print("document paper tests passed")
 

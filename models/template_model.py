@@ -36,6 +36,7 @@ class Template:
     template_type: str = "screen"
     render_preset: str = "clear"
     is_broken: bool = False
+    storage_key: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -80,30 +81,42 @@ class TemplateManager:
         os.makedirs(templates_dir, exist_ok=True)
         os.makedirs(self.backgrounds_dir, exist_ok=True)
 
-    def save(self, template: Template) -> None:
-        path = os.path.join(self.templates_dir, f"{template.name}.json")
+    def save(self, template: Template, storage_key: Optional[str] = None) -> str:
+        storage_key = storage_key or self._storage_key_for(template.name, template.category)
+        path = os.path.join(self.templates_dir, f"{storage_key}.json")
         data = template.to_dict()
-        data["background_path"] = self._persistent_background_path(template.name, template.background_path)
+        data["background_path"] = self._persistent_background_path(storage_key, template.background_path)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        return storage_key
 
     def load_all(self) -> List[Template]:
         templates = []
         for fn in sorted(os.listdir(self.templates_dir), key=_natural_key):
             if fn.endswith(".json"):
                 try:
-                    with open(os.path.join(self.templates_dir, fn), "r", encoding="utf-8") as f:
-                        templates.append(Template.from_dict(json.load(f)))
+                    path = os.path.join(self.templates_dir, fn)
+                    with open(path, "r", encoding="utf-8") as f:
+                        tpl = Template.from_dict(json.load(f))
+                    tpl.storage_key = os.path.splitext(fn)[0]
+                    templates.append(tpl)
                 except Exception:
                     pass
-        return templates
+        return sorted(
+            templates,
+            key=lambda t: (
+                normalize_template_category(t.category),
+                _natural_key(t.name),
+                _natural_key(t.storage_key or t.name),
+            ),
+        )
 
     def load(self, name: str) -> Optional[Template]:
         path = os.path.join(self.templates_dir, f"{name}.json")
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return self._load_from_data(path, data)
+            return self._load_from_data(path, data, os.path.splitext(os.path.basename(path))[0])
         return None
 
     def delete(self, name: str) -> None:
@@ -112,10 +125,25 @@ class TemplateManager:
             os.remove(path)
 
     def names(self) -> List[str]:
-        return [t.name for t in self.load_all()]
+        return [t.storage_key or t.name for t in self.load_all()]
 
-    def _load_from_data(self, json_path: str, data: dict) -> Template:
+    def key_for_name_category(self, name: str, category: str) -> Optional[str]:
+        category = normalize_template_category(category)
+        for template in self.load_all():
+            if template.name == name and normalize_template_category(template.category) == category:
+                return template.storage_key or template.name
+        return None
+
+    def display_label(self, key: str) -> str:
+        template = self.load(key)
+        if not template:
+            return key
+        category = normalize_template_category(template.category)
+        return f"{template.name} · {category}"
+
+    def _load_from_data(self, json_path: str, data: dict, storage_key: str) -> Template:
         template = Template.from_dict(data)
+        template.storage_key = storage_key
         if self._is_in_backgrounds(template.background_path):
             return template
 
@@ -124,7 +152,7 @@ class TemplateManager:
             return template
 
         try:
-            new_background_path = self._copy_background(template.name, template.background_path)
+            new_background_path = self._copy_background(storage_key, template.background_path)
             new_data = dict(data)
             new_data["background_path"] = new_background_path
             self._atomic_write_json(json_path, new_data)
@@ -193,3 +221,28 @@ class TemplateManager:
             settings.setValue("migration/pending_failed", pending)
         except Exception:
             pass
+
+    def _storage_key_for(self, name: str, category: str) -> str:
+        category = normalize_template_category(category)
+        same_category_key = self.key_for_name_category(name, category)
+        if same_category_key:
+            return same_category_key
+
+        base = self._safe_filename(name)
+        base_path = os.path.join(self.templates_dir, f"{base}.json")
+        if not os.path.exists(base_path):
+            return base
+
+        category_base = f"{base}__{self._safe_filename(category)}"
+        key = category_base
+        idx = 2
+        while os.path.exists(os.path.join(self.templates_dir, f"{key}.json")):
+            key = f"{category_base}_{idx}"
+            idx += 1
+        return key
+
+    @staticmethod
+    def _safe_filename(value: str) -> str:
+        value = str(value or "模板").strip() or "模板"
+        value = re.sub(r'[\\/:\*\?"<>\|]+', "_", value)
+        return value.strip(". ") or "模板"

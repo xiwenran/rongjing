@@ -223,29 +223,58 @@ def embed_document_paper_pil(
     warped_arr = np.array(warped, dtype=np.float32)
     mask_f = np.array(mask, dtype=np.float32)[:, :, np.newaxis] / 255.0
 
-    bg_luma = (
-        0.299 * bg_arr[:, :, 0]
-        + 0.587 * bg_arr[:, :, 1]
-        + 0.114 * bg_arr[:, :, 2]
-    )[:, :, np.newaxis] / 255.0
-    light = 0.82 + bg_luma * 0.28
+    bg_luma_img = Image.fromarray(
+        np.clip(
+            0.299 * bg_arr[:, :, 0]
+            + 0.587 * bg_arr[:, :, 1]
+            + 0.114 * bg_arr[:, :, 2],
+            0,
+            255,
+        ).astype(np.uint8),
+        "L",
+    ).filter(ImageFilter.GaussianBlur(max(bg_w, bg_h) * 0.018))
+    bg_luma = np.array(bg_luma_img, dtype=np.float32)[:, :, np.newaxis] / 255.0
+
+    bg_soft_img = bg_img.filter(ImageFilter.GaussianBlur(max(bg_w, bg_h) * 0.012))
+    bg_soft = np.array(bg_soft_img, dtype=np.float32)
+    bg_texture = np.clip(bg_arr - bg_soft, -28.0, 28.0)
+
+    shade = 0.82 + bg_luma * 0.34
+    shade = shade / max(float(shade[mask_f[:, :, :1] > 0.4].mean()), 0.01)
+    shade = np.clip(shade, 0.72, 1.18)
 
     if preset == "paper":
-        rng = np.random.default_rng(17)
-        noise = rng.normal(0, 1.4, (bg_h, bg_w, 1)).astype(np.float32)
-        page = warped_arr * light + bg_arr * 0.10 + noise
-        alpha = 0.86
+        texture_weight = 0.16
+        bg_bleed = 0.055
+        contrast = 0.985
+        alpha = 0.985
+        noise_sigma = 1.15
+        cast = np.array([0.0, -1.0, -3.0], dtype=np.float32)
     elif preset == "warm":
-        warm = np.array([7.0, 3.0, -5.0], dtype=np.float32)
-        rng = np.random.default_rng(23)
-        noise = rng.normal(0, 0.9, (bg_h, bg_w, 1)).astype(np.float32)
-        page = warped_arr * (0.86 + bg_luma * 0.22) + bg_arr * 0.08 + warm + noise
-        alpha = 0.88
+        texture_weight = 0.13
+        bg_bleed = 0.06
+        contrast = 0.98
+        alpha = 0.982
+        noise_sigma = 1.0
+        cast = np.array([6.0, 2.0, -5.0], dtype=np.float32)
     else:
-        page = warped_arr * (0.90 + bg_luma * 0.16) + bg_arr * 0.04
-        alpha = 0.94
+        texture_weight = 0.09
+        bg_bleed = 0.035
+        contrast = 1.0
+        alpha = 0.992
+        noise_sigma = 0.65
+        cast = np.array([0.0, 0.0, 0.0], dtype=np.float32)
 
-    page = np.clip(page, 0, 255)
+    page = (warped_arr - 128.0) * contrast + 128.0
+    page = page * shade + bg_texture * texture_weight + bg_arr * bg_bleed + cast
+    if bg_bleed:
+        page = page / (1.0 + bg_bleed)
+
+    rng = np.random.default_rng(17 if preset == "paper" else 23 if preset == "warm" else 11)
+    noise = rng.normal(0, noise_sigma, (bg_h, bg_w, 1)).astype(np.float32)
+    page = page + noise
+    page_img = Image.fromarray(np.clip(page, 0, 255).astype(np.uint8), "RGB")
+    page = np.array(page_img.filter(ImageFilter.GaussianBlur(0.18)), dtype=np.float32)
     blend_f = mask_f * alpha
     result = (1.0 - blend_f) * bg_arr + blend_f * page
     return Image.fromarray(np.clip(result, 0, 255).astype(np.uint8), "RGB")

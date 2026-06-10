@@ -1,7 +1,7 @@
 import os
 import random
 import re
-from collections import deque
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fractions import Fraction
 from typing import List, Optional, Tuple
@@ -95,11 +95,16 @@ class BatchRunner(QThread):
             done = 0
 
             for group_name, files, templates in self.tasks:
+                output_name_counts = Counter(t.name for t in templates)
                 for template in templates:
                     if self._abort:
                         self.finished.emit(False, "已取消"); return
 
-                    out_sub = os.path.join(self.output_dir, group_name, template.name)
+                    template_out_name = template.name
+                    if output_name_counts[template.name] > 1:
+                        category = getattr(template, "category", "模板") or "模板"
+                        template_out_name = f"{category}-{template.name}"
+                    out_sub = os.path.join(self.output_dir, group_name, template_out_name)
                     os.makedirs(out_sub, exist_ok=True)
 
                     # 0 = use template/background size. Otherwise keep aspect ratio at target width.
@@ -212,7 +217,7 @@ class BatchRunner(QThread):
                                 raise
 
                             done += 1
-                            self.progress.emit(done, total, f"{group_name}/{template.name}/{i}{ext}")
+                            self.progress.emit(done, total, f"{group_name}/{template_out_name}/{i}{ext}")
 
             self.finished.emit(True, f"完成！共处理 {done} 张图片")
 

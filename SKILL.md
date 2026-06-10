@@ -33,20 +33,20 @@ python3 ~/rongjing/cli.py <子命令>
 cd ~/rongjing && python3 cli.py list-templates
 ```
 
-输出 JSON，展示给用户：模板编号 + 背景图文件名。
+输出 JSON，展示给用户：模板 `key` + 显示名称 + 分类 + 背景图文件名。同名模板按分类区分时，后续命令必须使用 `key`。
 
 ### Step 2：确认参数后执行
 
 ```bash
 cd ~/rongjing && python3 cli.py process \
   --input <路径1> [路径2 ...] \
-  --templates <模板名1> [模板名2 ...] \
+  --templates <模板key1> [模板key2 ...] \
   --output <输出目录> \
   --format JPEG
 ```
 
 - `--input`：文件夹（自动扫描内部图片）或具体图片文件，可传多个
-- `--templates`：模板名称（即 JSON 文件名不含扩展名，如 `1` `2` `10`）
+- `--templates`：模板 `key`，或没有重名时的唯一模板名称；同名模板必须用 `list-templates` 里的 `key`
 - `--format`：默认 JPEG（质量95），需无损时用 PNG
 
 ### Step 3：报告结果
@@ -61,9 +61,9 @@ cd ~/rongjing && python3 cli.py process \
 ## 注意事项
 
 - 模板存储在 `~/Library/Application Support/融景/templates/`，用 `list-templates` 查看
-- 每个模板对应一张背景图，合成结果按 `输出目录/模板名/1.jpg, 2.jpg...` 存放
+- 每个模板对应一张背景图，合成结果按 `输出目录/模板key/1.jpg, 2.jpg...` 存放
 - 如果背景图路径不存在，CLI 会报错并说明哪个模板有问题
-- 用户说"所有模板"时，先 list-templates 获取名称列表，再传给 --templates
+- 用户说"所有模板"时，先 list-templates 获取 `key` 列表，再传给 --templates
 - **多主题批量合成的输出结构（必看）**：`--input` 传入多个文件夹（多主题）时，融景把所有主题的图片合并后按模板分目录、连续编号——输出是 `模板名/1.jpg ~ N.jpg`，不会按主题切分。若需要「主题/模板/图片」结构，合成完成后必须额外派 codex-rescue 写重整脚本，按每个主题的图片数量把连续编号切回各自的主题子目录，并验证每个主题子目录的文件数与用户给出的数字一致。**多主题作业前必须先问用户"每个主题各有几张图"**，拿到确认的数字后才能继续，不可跳过。
 
 ## 不支持的功能

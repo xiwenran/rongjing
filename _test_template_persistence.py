@@ -1,4 +1,7 @@
+import contextlib
 import hashlib
+import importlib
+import io
 import json
 import os
 import shutil
@@ -107,6 +110,83 @@ def test_new_template_fields_persist_and_load():
         assert loaded.category == "文档纸张"
         assert loaded.template_type == "document_paper"
         assert loaded.render_preset == "warm"
+
+    with_tmp(run)
+
+
+def test_duplicate_names_allowed_across_categories():
+    def run(root, templates_dir, backgrounds_dir, sources_dir):
+        teacher_bg = os.path.join(sources_dir, "teacher.jpg")
+        paper_bg = os.path.join(sources_dir, "paper.jpg")
+        write_file(teacher_bg, b"teacher-image")
+        write_file(paper_bg, b"paper-image")
+
+        manager = TemplateManager(templates_dir, backgrounds_dir=backgrounds_dir)
+        teacher_key = manager.save(Template(
+            name="1",
+            background_path=teacher_bg,
+            screen_points=[[0, 0], [10, 0], [10, 10], [0, 10]],
+            category="教师场景",
+        ))
+        paper_key = manager.save(Template(
+            name="1",
+            background_path=paper_bg,
+            screen_points=[[0, 0], [10, 0], [10, 10], [0, 10]],
+            category="文档纸张",
+            template_type="document_paper",
+        ))
+
+        assert teacher_key != paper_key
+        assert manager.load(teacher_key).name == "1"
+        assert manager.load(paper_key).name == "1"
+        assert manager.load(teacher_key).category == "教师场景"
+        assert manager.load(paper_key).category == "文档纸张"
+        assert manager.key_for_name_category("1", "教师场景") == teacher_key
+        assert manager.key_for_name_category("1", "文档纸张") == paper_key
+        assert [t.category for t in manager.load_all()] == ["教师场景", "文档纸张"]
+
+    with_tmp(run)
+
+
+def test_cli_requires_key_for_duplicate_display_names():
+    def run(root, templates_dir, backgrounds_dir, sources_dir):
+        teacher_bg = os.path.join(sources_dir, "teacher.jpg")
+        paper_bg = os.path.join(sources_dir, "paper.jpg")
+        write_file(teacher_bg, b"teacher-image")
+        write_file(paper_bg, b"paper-image")
+
+        manager = TemplateManager(templates_dir, backgrounds_dir=backgrounds_dir)
+        teacher_key = manager.save(Template(
+            name="1",
+            background_path=teacher_bg,
+            screen_points=[[0, 0], [10, 0], [10, 10], [0, 10]],
+            category="教师场景",
+        ))
+        paper_key = manager.save(Template(
+            name="1",
+            background_path=paper_bg,
+            screen_points=[[0, 0], [10, 0], [10, 10], [0, 10]],
+            category="文档纸张",
+            template_type="document_paper",
+        ))
+
+        cli = importlib.import_module("cli")
+        old_dir = cli.TEMPLATES_DIR
+        cli.TEMPLATES_DIR = templates_dir
+        try:
+            assert cli.load_template(teacher_key)["_storage_key"] == teacher_key
+            assert cli.load_template(paper_key)["_storage_key"] == paper_key
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cli.list_templates()
+            listed = json.loads(buf.getvalue())
+            keys = {item["key"] for item in listed}
+            assert teacher_key in keys
+            assert paper_key in keys
+            assert all(item.get("label") for item in listed)
+        finally:
+            cli.TEMPLATES_DIR = old_dir
 
     with_tmp(run)
 
@@ -232,6 +312,8 @@ def test_load_hash_mismatch_deletes_copy_and_keeps_original_json():
 def run_tests():
     test_save_external_background_copies_and_existing_background_is_direct()
     test_new_template_fields_persist_and_load()
+    test_duplicate_names_allowed_across_categories()
+    test_cli_requires_key_for_duplicate_display_names()
     test_old_json_defaults_to_screen_template_fields()
     test_load_old_existing_background_migrates_once()
     test_load_migration_copy_failure_keeps_original_json()

@@ -124,14 +124,14 @@ pip install Pillow numpy
 python3 cli.py list-templates
 ```
 
-输出 JSON，包含模板名称与背景图路径。
+输出 JSON，包含模板 `key`、显示名称、分类与背景图信息。同名模板按分类区分时，后续命令优先使用 `key`。
 
 ### 批量合成图片
 
 ```bash
 python3 cli.py process \
   --input <文件夹或图片路径...> \
-  --templates <模板名...> \
+  --templates <模板key或唯一模板名...> \
   --output <输出目录> \
   --format JPEG   # 或 PNG
 ```
@@ -145,13 +145,14 @@ python3 cli.py process \
   --output ~/Desktop/合成结果/
 ```
 
-**输出结构**：`输出目录 / 模板名 / 1.jpg, 2.jpg, ...`
+**输出结构**：`输出目录 / 模板key / 1.jpg, 2.jpg, ...`
 
 ### 注意
 
 - 视频合成仅支持图形界面（需要 PyAV + QThread）
 - 新建/编辑模板须在融景 App 内完成（需要可视化标注角点）
 - 模板文件存储于 `~/Library/Application Support/融景/templates/`
+- 跨分类允许同名模板；如果 CLI 提示名称重复，先运行 `list-templates` 查看 `key`，再用 `--templates <key>` 精确选择
 
 ---
 

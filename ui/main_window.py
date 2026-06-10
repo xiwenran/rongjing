@@ -436,17 +436,19 @@ class TemplatePickerDialog(QDialog):
                 iv.addLayout(grid)
                 for idx_t, t in enumerate(grouped[category]):
                     cb = QCheckBox(t.name)
-                    cb.setProperty("template_name", t.name)
+                    key = getattr(t, "storage_key", "") or t.name
+                    cb.setProperty("template_name", key)
                     cb.setToolTip(f"{category} · {getattr(t, 'template_type', 'screen')}")
-                    cb.setChecked(t.name in preselected)
+                    cb.setChecked(key in preselected)
                     grid.addWidget(cb, idx_t // 2, idx_t % 2)
                     self._checks.append(cb)
             else:
                 for t in grouped[category]:
                     cb = QCheckBox(t.name)
-                    cb.setProperty("template_name", t.name)
+                    key = getattr(t, "storage_key", "") or t.name
+                    cb.setProperty("template_name", key)
                     cb.setToolTip(f"{category} · {getattr(t, 'template_type', 'screen')}")
-                    cb.setChecked(t.name in preselected)
+                    cb.setChecked(key in preselected)
                     iv.addWidget(cb)
                     self._checks.append(cb)
         iv.addStretch()
@@ -1213,12 +1215,13 @@ class MainWindow(QMainWindow):
     def _refresh_template_list(self):
         self.template_list.clear()
         for t in self.tm.load_all():
-            loaded = self.tm.load(t.name) or t
+            key = getattr(t, "storage_key", "") or t.name
+            loaded = self.tm.load(key) or t
             category = getattr(loaded, "category", "教师场景") or "教师场景"
             marker = "⚠ " if loaded.is_broken else ""
             text = f"{marker}{loaded.name}  ·  {category}"
             item = QListWidgetItem(text)
-            item.setData(Qt.ItemDataRole.UserRole, loaded.name)
+            item.setData(Qt.ItemDataRole.UserRole, key)
             item.setToolTip(category)
             if loaded.is_broken:
                 item.setForeground(QColor(_RED))
@@ -1228,10 +1231,10 @@ class MainWindow(QMainWindow):
     def _on_template_selected(self, row):
         if row < 0: return
         item = self.template_list.item(row)
-        name = item.data(Qt.ItemDataRole.UserRole) or item.text()
-        tpl = self.tm.load(name)
+        key = item.data(Qt.ItemDataRole.UserRole) or item.text()
+        tpl = self.tm.load(key)
         if not tpl: return
-        self._loaded_tpl_name = name
+        self._loaded_tpl_name = key
         self.tpl_name_edit.setText(tpl.name)
         self.bg_path_edit.setText(tpl.background_path)
         self._set_template_category(getattr(tpl, "category", "教师场景"))
@@ -1312,12 +1315,14 @@ class MainWindow(QMainWindow):
     def _delete_template(self):
         item = self.template_list.currentItem()
         if not item: return
-        name = item.data(Qt.ItemDataRole.UserRole) or item.text()
-        if QMessageBox.question(self, "确认删除", f"删除模板「{name}」？",
+        key = item.data(Qt.ItemDataRole.UserRole) or item.text()
+        tpl = self.tm.load(key)
+        label = tpl.name if tpl else key
+        if QMessageBox.question(self, "确认删除", f"删除模板「{label}」？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         ) == QMessageBox.StandardButton.Yes:
-            self.tm.delete(name)
-            if self._loaded_tpl_name == name:
+            self.tm.delete(key)
+            if self._loaded_tpl_name == key:
                 self._loaded_tpl_name = None
             self._refresh_template_list()
 
@@ -1563,18 +1568,20 @@ class MainWindow(QMainWindow):
         if len(self.canvas.points) != 4:
             QMessageBox.warning(self, "提示", "请在背景图片上放置 4 个角点"); return
 
-        # Overwrite guard: warn if name exists and it's NOT the template we loaded
-        if self.tm.load(name) and name != self._loaded_tpl_name:
+        w, h = self._editor_output_size()
+        category = self._selected_template_category()
+        template_type = self._current_template_type()
+
+        existing_key = self.tm.key_for_name_category(name, category)
+        if existing_key and existing_key != self._loaded_tpl_name:
             reply = QMessageBox.question(self, "已存在同名模板",
-                f"模板「{name}」已存在，是否覆盖？",
+                f"「{category}」分类下已存在模板「{name}」，是否覆盖？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
-        w, h = self._editor_output_size()
-        category = self._selected_template_category()
-        template_type = self._current_template_type()
-        self.tm.save(Template(
+        target_key = existing_key or self._loaded_tpl_name
+        storage_key = self.tm.save(Template(
             name,
             bg,
             self.canvas.points,
@@ -1583,12 +1590,12 @@ class MainWindow(QMainWindow):
             category=category,
             template_type=template_type,
             render_preset=(self.tpl_preset_combo.currentData() if template_type == "document_paper" else "clear") or "clear",
-        ))
-        self._loaded_tpl_name = name
+        ), storage_key=target_key)
+        self._loaded_tpl_name = storage_key
         self._refresh_template_list()
         for i in range(self.template_list.count()):
             item = self.template_list.item(i)
-            if (item.data(Qt.ItemDataRole.UserRole) or item.text()) == name:
+            if (item.data(Qt.ItemDataRole.UserRole) or item.text()) == storage_key:
                 self.template_list.setCurrentRow(i); break
         QMessageBox.information(self, "已保存", f"模板「{name}」保存成功")
 
@@ -1713,15 +1720,24 @@ class MainWindow(QMainWindow):
             ]
         return templates
 
+    def _template_label(self, key: str) -> str:
+        return self.tm.display_label(key)
+
+    def _template_button_text(self, keys: list) -> str:
+        if not keys:
+            return "选择模板 ▾"
+        if len(keys) == 1:
+            label = self._template_label(keys[0])
+            return (label[:12] + "… ▾") if len(label) > 12 else (label + " ▾")
+        return f"已选 {len(keys)} 个模板 ▾"
+
+    def _template_tooltip(self, keys: list) -> str:
+        return "、".join(self._template_label(key) for key in keys)
+
     def _make_tpl_btn(self, row: int, selected_names: list) -> QPushButton:
         """Create a template-picker button for a table row."""
         def label():
-            sel = self._row_selections.get(row, [])
-            if not sel: return "选择模板 ▾"
-            if len(sel) == 1:
-                n = sel[0]
-                return (n[:12] + "… ▾") if len(n) > 12 else (n + " ▾")
-            return f"已选 {len(sel)} 个模板 ▾"
+            return self._template_button_text(self._row_selections.get(row, []))
 
         btn = QPushButton(label())
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1745,24 +1761,19 @@ class MainWindow(QMainWindow):
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 self._row_selections[row] = dlg.selected_names()
                 btn.setText(label())
-                btn.setToolTip("、".join(self._row_selections[row]))
+                btn.setToolTip(self._template_tooltip(self._row_selections[row]))
 
         btn.clicked.connect(open_picker)
         btn._label_fn = label
         self._row_selections[row] = list(selected_names)
         btn.setText(label())
-        btn.setToolTip("、".join(selected_names))
+        btn.setToolTip(self._template_tooltip(selected_names))
         return btn
 
     def _make_video_tpl_btn(self, row: int, selected_names: list) -> QPushButton:
         """Create a template-picker button for a video table row."""
         def label():
-            sel = self._video_row_selections.get(row, [])
-            if not sel: return "选择模板 ▾"
-            if len(sel) == 1:
-                n = sel[0]
-                return (n[:12] + "… ▾") if len(n) > 12 else (n + " ▾")
-            return f"已选 {len(sel)} 个模板 ▾"
+            return self._template_button_text(self._video_row_selections.get(row, []))
         btn = QPushButton(label())
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         btn.setStyleSheet(f"""
@@ -1784,12 +1795,12 @@ class MainWindow(QMainWindow):
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 self._video_row_selections[row] = dlg.selected_names()
                 btn.setText(label())
-                btn.setToolTip("、".join(self._video_row_selections[row]))
+                btn.setToolTip(self._template_tooltip(self._video_row_selections[row]))
         btn.clicked.connect(open_picker)
         btn._label_fn = label
         self._video_row_selections[row] = list(selected_names)
         btn.setText(label())
-        btn.setToolTip("、".join(selected_names))
+        btn.setToolTip(self._template_tooltip(selected_names))
         return btn
 
     def _scan_subfolders(self):
@@ -1847,10 +1858,8 @@ class MainWindow(QMainWindow):
             self._row_selections[row] = list(names)
             btn = self.subfolder_table.cellWidget(row, 2)
             if btn:
-                txt = (names[0][:12] + "… ▾") if len(names) == 1 and len(names[0]) > 12 else \
-                      (names[0] + " ▾") if len(names) == 1 else f"已选 {len(names)} 个模板 ▾"
-                btn.setText(txt)
-                btn.setToolTip("、".join(names))
+                btn.setText(self._template_button_text(names))
+                btn.setToolTip(self._template_tooltip(names))
 
     def _pick_image_files(self):
         if sys.platform == "darwin":

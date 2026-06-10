@@ -28,11 +28,38 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
 
 def load_template(name: str):
     path = os.path.join(TEMPLATES_DIR, f"{name}.json")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"模板不存在：{name}（{path}）")
-    with open(path, encoding="utf-8") as f:
-        d = json.load(f)
-    return d
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        d["_storage_key"] = name
+        return d
+
+    matches = []
+    if os.path.isdir(TEMPLATES_DIR):
+        for fn in sorted(os.listdir(TEMPLATES_DIR), key=natural_sort_key):
+            if not fn.endswith(".json"):
+                continue
+            key = fn[:-5]
+            try:
+                with open(os.path.join(TEMPLATES_DIR, fn), encoding="utf-8") as f:
+                    d = json.load(f)
+            except Exception:
+                continue
+            if d.get("name", key) == name:
+                d["_storage_key"] = key
+                matches.append(d)
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        options = [
+            f"{m['_storage_key']}（{m.get('name', m['_storage_key'])} · {m.get('category', '未分类')}）"
+            for m in matches
+        ]
+        raise FileNotFoundError(
+            f"模板名重复：{name}。请改用模板 key：{', '.join(options)}"
+        )
+    raise FileNotFoundError(f"模板不存在：{name}（{path}）")
 
 
 def list_templates():
@@ -46,13 +73,19 @@ def list_templates():
                 with open(os.path.join(TEMPLATES_DIR, fn), encoding="utf-8") as f:
                     d = json.load(f)
                 bg = d.get("background_path", "")
+                key = fn[:-5]
+                name = d.get("name", key)
+                category = d.get("category", "教师场景")
                 templates.append({
-                    "name": d.get("name", fn[:-5]),
+                    "key": key,
+                    "name": name,
+                    "category": category,
+                    "label": f"{name} · {category}",
                     "background": os.path.basename(bg),
                     "background_exists": os.path.exists(bg),
                 })
             except Exception as e:
-                templates.append({"name": fn[:-5], "error": str(e)})
+                templates.append({"key": fn[:-5], "name": fn[:-5], "error": str(e)})
     print(json.dumps(templates, ensure_ascii=False, indent=2))
 
 
@@ -158,7 +191,11 @@ def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: 
     # 延迟导入，避免系统没装 Pillow 时 list-templates 也报错
     sys.path.insert(0, os.path.dirname(__file__))
     from PIL import Image
-    from core.image_processor import precompute_template_cache, embed_image_pil_fast
+    from core.image_processor import (
+        embed_document_paper_pil,
+        embed_image_pil_fast,
+        precompute_template_cache,
+    )
 
     output_dir = os.path.expanduser(output_dir)
     os.makedirs(output_dir, exist_ok=True)
@@ -175,26 +212,41 @@ def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: 
     done = 0
 
     for tpl_name in template_names:
-        tpl = load_template(tpl_name)
+        try:
+            tpl = load_template(tpl_name)
+        except FileNotFoundError as exc:
+            print(f"[错误] {exc}", file=sys.stderr)
+            sys.exit(1)
+        tpl_key = tpl.get("_storage_key", tpl_name)
+        tpl_label = f"{tpl.get('name', tpl_key)} · {tpl.get('category', '未分类')}"
         bg_path = tpl["background_path"]
         if not os.path.exists(bg_path):
-            print(f"[错误] 模板 {tpl_name} 的背景图不存在：{bg_path}", file=sys.stderr)
+            print(f"[错误] 模板 {tpl_label} 的背景图不存在：{bg_path}", file=sys.stderr)
             sys.exit(1)
 
         bg_img = Image.open(bg_path)
-        cache = precompute_template_cache(bg_img, tpl["screen_points"])
+        is_document = tpl.get("template_type") == "document_paper"
+        cache = None if is_document else precompute_template_cache(bg_img, tpl["screen_points"])
 
-        out_sub = os.path.join(output_dir, tpl_name)
+        out_sub = os.path.join(output_dir, tpl_key)
         os.makedirs(out_sub, exist_ok=True)
 
         for i, img_path in enumerate(images, 1):
             ppt_img = Image.open(img_path)
-            result = embed_image_pil_fast(ppt_img, cache)
+            if is_document:
+                result = embed_document_paper_pil(
+                    ppt_img,
+                    bg_img,
+                    tpl["screen_points"],
+                    tpl.get("render_preset", "paper"),
+                )
+            else:
+                result = embed_image_pil_fast(ppt_img, cache)
 
             out_path = os.path.join(out_sub, f"{i}{ext}")
             result.save(out_path, **save_kwargs)
             done += 1
-            print(f"[{done}/{total}] 模板={tpl_name} 图={i} → {out_path}")
+            print(f"[{done}/{total}] 模板={tpl_label} 图={i} → {out_path}")
 
     print(f"\n完成！共处理 {done} 张，输出目录：{output_dir}")
 
@@ -210,7 +262,7 @@ def main():
 
     p = sub.add_parser("process", help="批量合成图片")
     p.add_argument("--input", nargs="+", required=True, help="输入：文件夹或图片路径（可多个）")
-    p.add_argument("--templates", nargs="+", required=True, help="模板名称（可多个）")
+    p.add_argument("--templates", nargs="+", required=True, help="模板 key 或唯一模板名称（可多个）")
     p.add_argument("--output", required=True, help="输出目录")
     p.add_argument("--format", default="JPEG", choices=["PNG", "JPEG"], help="输出格式（默认 JPEG）")
     p.add_argument("--cover-source", default=None,
