@@ -18,7 +18,12 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSize, QSettings, QPoint
 from PyQt6.QtGui import QFont, QColor
 
-from models.template_model import Template, TemplateManager, normalize_template_category
+from models.template_model import (
+    Template,
+    TemplateManager,
+    normalize_render_preset,
+    normalize_template_category,
+)
 from core.batch_runner import BatchRunner, VideoRunner, get_image_files, natural_sort_key
 from core.ai_background import normalize_base_url
 from core.screen_detector import detect_screen_points
@@ -280,15 +285,13 @@ BATCH_OUTPUT_WIDTH_PRESETS = {
     "4K 3840 宽": 3840,
 }
 
-TEMPLATE_CATEGORIES = ["教师场景", "台式机电脑", "笔记本室内", "文档纸张", "自定义场景"]
+TEMPLATE_CATEGORIES = ["教室场景", "台式机电脑", "笔记本室内", "文档纸张", "自定义场景"]
 TEMPLATE_TYPES = {
     "屏幕 / 大屏": "screen",
     "文档纸张": "document_paper",
 }
 DOCUMENT_PRESETS = {
-    "清晰优先": "clear",
     "真实纸感": "paper",
-    "暖光纸面": "warm",
 }
 
 
@@ -422,12 +425,15 @@ class TemplatePickerDialog(QDialog):
         iv.setSpacing(8)
 
         self._checks: list[QCheckBox] = []
+        self._group_checks: list[QCheckBox] = []
         preselected = set(preselected or [])
         grouped = {}
         for t in all_templates:
-            grouped.setdefault(getattr(t, "category", "教师场景") or "教师场景", []).append(t)
-        for category in sorted(grouped):
-            heading = QLabel(category)
+            category = normalize_template_category(getattr(t, "category", "教室场景") or "教室场景")
+            grouped.setdefault(category, []).append(t)
+        for category in sorted(grouped, key=_category_sort_key):
+            group_checks: list[QCheckBox] = []
+            heading = QCheckBox(category)
             heading.setStyleSheet(f"font-size: 12px; font-weight: 700; color: {_TEXT2}; padding: 6px 4px 2px 4px;")
             iv.addWidget(heading)
             if len(grouped[category]) > 4:
@@ -442,6 +448,7 @@ class TemplatePickerDialog(QDialog):
                     cb.setChecked(key in preselected)
                     grid.addWidget(cb, idx_t // 2, idx_t % 2)
                     self._checks.append(cb)
+                    group_checks.append(cb)
             else:
                 for t in grouped[category]:
                     cb = QCheckBox(t.name)
@@ -451,6 +458,10 @@ class TemplatePickerDialog(QDialog):
                     cb.setChecked(key in preselected)
                     iv.addWidget(cb)
                     self._checks.append(cb)
+                    group_checks.append(cb)
+            heading.setChecked(all(c.isChecked() for c in group_checks) if group_checks else False)
+            heading.clicked.connect(lambda checked, checks=group_checks: [c.setChecked(checked) for c in checks])
+            self._group_checks.append(heading)
         iv.addStretch()
         scroll.setWidget(inner)
         lv.addWidget(scroll)
@@ -473,6 +484,26 @@ class TemplatePickerDialog(QDialog):
 
     def selected_names(self) -> list:
         return [c.property("template_name") or c.text() for c in self._checks if c.isChecked()]
+
+
+def _category_sort_key(category: str):
+    category = normalize_template_category(category)
+    if category in TEMPLATE_CATEGORIES:
+        return (TEMPLATE_CATEGORIES.index(category), "")
+    return (len(TEMPLATE_CATEGORIES), category)
+
+
+class SlowTemplateListWidget(QListWidget):
+    """Keep template list wheel scrolling controllable on high-resolution mice."""
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return super().wheelEvent(event)
+        bar = self.verticalScrollBar()
+        step = -1 if delta > 0 else 1
+        bar.setValue(bar.value() + step)
+        event.accept()
 
 
 def _set_green_selection(table_widget):
@@ -718,7 +749,7 @@ class MainWindow(QMainWindow):
         fv.addWidget(_lbl("模板库", "h2"))
         fv.addSpacing(10)
 
-        self.template_list = QListWidget()
+        self.template_list = SlowTemplateListWidget()
         self.template_list.setMinimumHeight(90)
         self.template_list.setMaximumHeight(200)
         self.template_list.currentRowChanged.connect(self._on_template_selected)
@@ -771,6 +802,8 @@ class MainWindow(QMainWindow):
         for label, value in DOCUMENT_PRESETS.items():
             self.tpl_preset_combo.addItem(label, value)
         fv.addWidget(self.tpl_preset_combo)
+        self.tpl_preset_label.setVisible(False)
+        self.tpl_preset_combo.setVisible(False)
         fv.addSpacing(10)
 
         # Background
@@ -1204,8 +1237,8 @@ class MainWindow(QMainWindow):
         self._new_template()
         self.bg_path_edit.setText(first)
         self.canvas.set_background(first)
-        self._set_template_category(context.get("category", "教师场景"))
-        self._set_document_preset(context.get("render_preset", "clear"))
+        self._set_template_category(context.get("category", "教室场景"))
+        self._set_document_preset(context.get("render_preset", "paper"))
         self._on_template_category_changed()
         self._update_auto_detect_enabled()
         self._save_dir("bg", os.path.dirname(first))
@@ -1214,31 +1247,44 @@ class MainWindow(QMainWindow):
 
     def _refresh_template_list(self):
         self.template_list.clear()
+        grouped = {}
         for t in self.tm.load_all():
             key = getattr(t, "storage_key", "") or t.name
             loaded = self.tm.load(key) or t
-            category = getattr(loaded, "category", "教师场景") or "教师场景"
-            marker = "⚠ " if loaded.is_broken else ""
-            text = f"{marker}{loaded.name}  ·  {category}"
-            item = QListWidgetItem(text)
-            item.setData(Qt.ItemDataRole.UserRole, key)
-            item.setToolTip(category)
-            if loaded.is_broken:
-                item.setForeground(QColor(_RED))
-                item.setToolTip("此模板的背景图已不存在，请重新选择背景图")
-            self.template_list.addItem(item)
+            category = normalize_template_category(getattr(loaded, "category", "教室场景") or "教室场景")
+            grouped.setdefault(category, []).append((key, loaded))
+        for category in sorted(grouped, key=_category_sort_key):
+            heading = QListWidgetItem(category)
+            heading.setFlags(Qt.ItemFlag.NoItemFlags)
+            heading.setForeground(QColor(_TEXT2))
+            heading.setData(Qt.ItemDataRole.UserRole, None)
+            font = heading.font()
+            font.setBold(True)
+            heading.setFont(font)
+            self.template_list.addItem(heading)
+            for key, loaded in grouped[category]:
+                prefix = "⚠ " if loaded.is_broken else ""
+                item = QListWidgetItem(f"  {prefix}{loaded.name}")
+                item.setData(Qt.ItemDataRole.UserRole, key)
+                item.setToolTip(category)
+                if loaded.is_broken:
+                    item.setForeground(QColor(_RED))
+                    item.setToolTip("此模板的背景图已不存在，请重新选择背景图")
+                self.template_list.addItem(item)
 
     def _on_template_selected(self, row):
         if row < 0: return
         item = self.template_list.item(row)
+        if not item or item.data(Qt.ItemDataRole.UserRole) is None:
+            return
         key = item.data(Qt.ItemDataRole.UserRole) or item.text()
         tpl = self.tm.load(key)
         if not tpl: return
         self._loaded_tpl_name = key
         self.tpl_name_edit.setText(tpl.name)
         self.bg_path_edit.setText(tpl.background_path)
-        self._set_template_category(getattr(tpl, "category", "教师场景"))
-        self._set_document_preset(getattr(tpl, "render_preset", "clear"))
+        self._set_template_category(getattr(tpl, "category", "教室场景"))
+        self._set_document_preset(getattr(tpl, "render_preset", "paper"))
         if os.path.exists(tpl.background_path):
             self.canvas.set_background(tpl.background_path)
             self.canvas.set_points(tpl.screen_points)
@@ -1267,8 +1313,8 @@ class MainWindow(QMainWindow):
         self.tpl_name_edit.clear()
         self.bg_path_edit.clear()
         self.preview_path_edit.clear()
-        self._set_template_category("教师场景")
-        self._set_document_preset("clear")
+        self._set_template_category("教室场景")
+        self._set_document_preset("paper")
         self.canvas.clear_all()
         self._update_auto_detect_enabled()
 
@@ -1276,7 +1322,7 @@ class MainWindow(QMainWindow):
         category = normalize_template_category(category)
         if category in TEMPLATE_CATEGORIES:
             self.tpl_custom_category_edit.clear()
-            self.tpl_category_combo.setCurrentText(category or "教师场景")
+            self.tpl_category_combo.setCurrentText(category or "教室场景")
         else:
             self.tpl_category_combo.setCurrentText("自定义场景")
             self.tpl_custom_category_edit.setText(category)
@@ -1288,7 +1334,7 @@ class MainWindow(QMainWindow):
         self._on_template_category_changed()
 
     def _set_document_preset(self, render_preset: str):
-        idx = self.tpl_preset_combo.findData(render_preset or "clear")
+        idx = self.tpl_preset_combo.findData(normalize_render_preset("文档纸张", render_preset))
         self.tpl_preset_combo.setCurrentIndex(idx if idx >= 0 else 0)
 
     def _current_template_type(self) -> str:
@@ -1297,7 +1343,7 @@ class MainWindow(QMainWindow):
 
     def _selected_template_category(self) -> str:
         custom = self.tpl_custom_category_edit.text().strip()
-        return custom or self.tpl_category_combo.currentText().strip() or "教师场景"
+        return normalize_template_category(custom or self.tpl_category_combo.currentText().strip() or "教室场景")
 
     def _on_template_category_preset_activated(self, *_):
         if self.tpl_custom_category_edit.text().strip():
@@ -1309,8 +1355,8 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self.tpl_type_combo.setCurrentIndex(idx)
         is_document = template_type == "document_paper"
-        self.tpl_preset_label.setVisible(is_document)
-        self.tpl_preset_combo.setVisible(is_document)
+        self.tpl_preset_label.setVisible(False)
+        self.tpl_preset_combo.setVisible(False)
 
     def _delete_template(self):
         item = self.template_list.currentItem()
@@ -1589,7 +1635,7 @@ class MainWindow(QMainWindow):
             h,
             category=category,
             template_type=template_type,
-            render_preset=(self.tpl_preset_combo.currentData() if template_type == "document_paper" else "clear") or "clear",
+            render_preset=("paper" if template_type == "document_paper" else "clear"),
         ), storage_key=target_key)
         self._loaded_tpl_name = storage_key
         self._refresh_template_list()

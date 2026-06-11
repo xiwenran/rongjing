@@ -19,7 +19,7 @@ def make_background():
     return bg
 
 
-def test_document_presets_keep_size_and_differ():
+def test_document_presets_keep_size_and_legacy_modes_are_normalized():
     paper = make_paper_image()
     bg = make_background()
     points = [[24, 12], [136, 18], [130, 110], [28, 104]]
@@ -31,8 +31,8 @@ def test_document_presets_keep_size_and_differ():
     assert clear.size == bg.size
     assert paper_preset.size == bg.size
     assert warm.size == bg.size
-    assert not np.array_equal(np.array(clear), np.array(paper_preset))
-    assert not np.array_equal(np.array(clear), np.array(warm))
+    assert np.array_equal(np.array(clear), np.array(paper_preset))
+    assert np.array_equal(np.array(clear), np.array(warm))
 
 
 def test_document_multiply_blends_white_and_keeps_color_content():
@@ -65,7 +65,7 @@ def test_screen_fast_path_still_callable():
 
 
 def run_tests():
-    test_document_presets_keep_size_and_differ()
+    test_document_presets_keep_size_and_legacy_modes_are_normalized()
     test_document_multiply_blends_white_and_keeps_color_content()
     test_screen_fast_path_still_callable()
     print("document paper tests passed")

@@ -193,21 +193,9 @@ def embed_document_paper_pil(
 
     bg_w, bg_h = bg_img.size
 
-    preset = (render_preset or "clear").lower()
-    if preset == "paper":
-        paper_img = ImageEnhance.Contrast(paper_img).enhance(1.06)
-        paper_img = ImageEnhance.Sharpness(paper_img).enhance(1.08)
-    elif preset == "warm":
-        paper_img = ImageEnhance.Contrast(paper_img).enhance(1.04)
-        arr = np.array(paper_img, dtype=np.float32)
-        arr[:, :, 0] *= 1.035
-        arr[:, :, 1] *= 1.012
-        arr[:, :, 2] *= 0.955
-        paper_img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
-    else:
-        preset = "clear"
-        paper_img = ImageEnhance.Contrast(paper_img).enhance(1.10)
-        paper_img = ImageEnhance.Sharpness(paper_img).enhance(1.12)
+    preset = "paper"
+    paper_img = ImageEnhance.Contrast(paper_img).enhance(1.08)
+    paper_img = ImageEnhance.Sharpness(paper_img).enhance(1.10)
 
     src_pts = np.float64([[0, 0], [paper_w, 0], [paper_w, paper_h], [0, paper_h]])
     dst_pts = order_points(points).astype(np.float64)
@@ -245,30 +233,15 @@ def embed_document_paper_pil(
     content = np.clip((1.0 - src_luma) * 2.2 + src_sat * 1.25, 0.0, 1.0)
     content = np.power(content, 0.72)
 
-    if preset == "paper":
-        restore = np.clip(0.08 + src_sat * 0.16 + (1.0 - src_luma) * 0.08, 0.0, 0.28)
-        page = multiply * (1.0 - restore * content) + warped_arr * (restore * content)
-        alpha = 0.96
-        noise_sigma = 0.75
-        blur_radius = 0.12
-        cast = np.array([0.0, -1.0, -2.0], dtype=np.float32)
-    elif preset == "warm":
-        restore = np.clip(0.08 + src_sat * 0.15 + (1.0 - src_luma) * 0.08, 0.0, 0.26)
-        page = multiply * (1.0 - restore * content) + warped_arr * (restore * content)
-        alpha = 0.95
-        noise_sigma = 0.65
-        blur_radius = 0.14
-        cast = np.array([5.0, 2.0, -4.0], dtype=np.float32)
-    else:
-        restore = np.clip(0.10 + src_sat * 0.16 + (1.0 - src_luma) * 0.07, 0.0, 0.28)
-        page = multiply * (1.0 - restore * content) + warped_arr * (restore * content)
-        alpha = 0.96
-        noise_sigma = 0.45
-        blur_radius = 0.08
-        cast = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    restore = np.clip(0.08 + src_sat * 0.16 + (1.0 - src_luma) * 0.08, 0.0, 0.28)
+    page = multiply * (1.0 - restore * content) + warped_arr * (restore * content)
+    alpha = 0.96
+    noise_sigma = 0.75
+    blur_radius = 0.12
+    cast = np.array([0.0, -1.0, -2.0], dtype=np.float32)
 
     page = page + cast
-    rng = np.random.default_rng(17 if preset == "paper" else 23 if preset == "warm" else 11)
+    rng = np.random.default_rng(17)
     page = page + rng.normal(0, noise_sigma, (bg_h, bg_w, 1)).astype(np.float32)
     page = (page - 128.0) * 0.985 + 128.0
     page_img = Image.fromarray(np.clip(page, 0, 255).astype(np.uint8), "RGB")

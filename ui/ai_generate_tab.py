@@ -52,16 +52,16 @@ _TEXT2 = "#888888"
 _RED = "#FA5151"
 _CACHE_DIR = os.path.join(os.path.expanduser("~"), ".rongjing", "ai_cache")
 
-_TARGET_TYPES = ["教师场景", "台式机电脑", "笔记本室内", "文档纸张", "自定义场景"]
+_TARGET_TYPES = ["教室场景", "台式机电脑", "笔记本室内", "文档纸张", "自定义场景"]
 _TARGET_DEVICES = {
-    "教师场景": ["希沃白板", "教室大屏", "多媒体大屏"],
+    "教室场景": ["希沃白板", "教室大屏", "多媒体大屏"],
     "台式机电脑": ["台式显示器", "一体机屏幕", "双屏桌面"],
     "笔记本室内": ["笔记本电脑", "笔记本外接屏"],
     "文档纸张": ["A4 竖版纸", "A4 横版纸"],
     "自定义场景": ["屏幕区域", "纸张区域"],
 }
 _TARGET_SCENES = {
-    "教师场景": ["小学教室", "中学教室", "多媒体教室", "教师办公室"],
+    "教室场景": ["小学教室", "中学教室", "多媒体教室", "教师办公室"],
     "台式机电脑": ["教师办公桌", "家里书桌", "校园办公室", "教研室"],
     "笔记本室内": ["家里书桌", "教师办公桌", "居家备课", "宿舍"],
     "文档纸张": ["木质桌面", "暖光书桌", "冷白办公桌", "浅色桌面"],
@@ -419,7 +419,7 @@ class AIGenerateTab(QWidget):
     save_finished = pyqtSignal(list, dict)
 
     _TRANSLATIONS = {
-        "教师场景": "a realistic Chinese teacher classroom or office display template background",
+        "教室场景": "a realistic Chinese classroom or teacher office display template background",
         "文档纸张": "a realistic blank sheet of paper on a desk for document compositing",
         "台式机电脑": "a desktop computer screen template background",
         "笔记本室内": "a laptop computer indoor desk template background",
@@ -539,8 +539,8 @@ class AIGenerateTab(QWidget):
 
         content.addWidget(_label("AI 背景图", "h2"))
         self._target_group = TagGroup("背景场景", _TARGET_TYPES)
-        self._device_group = TagGroup("主体类型", _TARGET_DEVICES["教师场景"])
-        self._scene_group = TagGroup("环境位置", _TARGET_SCENES["教师场景"])
+        self._device_group = TagGroup("主体类型", _TARGET_DEVICES["教室场景"])
+        self._scene_group = TagGroup("环境位置", _TARGET_SCENES["教室场景"])
         self._light_group = TagGroup("灯光", ["暖色灯光", "自然光", "冷白光", "柔光", "偏暗氛围"])
         self._angle_group = TagGroup("拍摄角度", ["正面平视", "略偏侧角", "略微俯视", "略微仰视"])
         self._decor_group = TagGroup("桌面摆件", ["有植物", "有咖啡杯", "有书本", "有小摆件", "极简"])
@@ -672,7 +672,7 @@ class AIGenerateTab(QWidget):
         self._save_btn.clicked.connect(self._save_selected)
 
     def _on_target_changed(self, value: str):
-        target = value or "教师场景"
+        target = value or "教室场景"
         self._device_group.replace_options(_TARGET_DEVICES.get(target, _TARGET_DEVICES["自定义场景"]))
         self._scene_group.replace_options(_TARGET_SCENES.get(target, _TARGET_SCENES["自定义场景"]))
 
@@ -767,7 +767,7 @@ class AIGenerateTab(QWidget):
             return {"category": "文档纸张", "template_type": "document_paper", "render_preset": "paper"}
         if target in ("台式机电脑", "笔记本室内", "自定义场景"):
             return {"category": target, "template_type": "screen", "render_preset": "clear"}
-        return {"category": "教师场景", "template_type": "screen", "render_preset": "clear"}
+        return {"category": "教室场景", "template_type": "screen", "render_preset": "clear"}
 
     @staticmethod
     def _is_document_target(target: str, device: str) -> bool:

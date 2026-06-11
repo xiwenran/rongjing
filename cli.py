@@ -18,6 +18,9 @@ import sys
 
 TEMPLATES_DIR = os.path.expanduser("~/Library/Application Support/融景/templates")
 
+sys.path.insert(0, os.path.dirname(__file__))
+from models.template_model import normalize_render_preset, normalize_template_category
+
 
 def natural_sort_key(s: str):
     return [int(c) if c.isdigit() else c.lower() for c in re.split(r"(\d+)", s)]
@@ -53,7 +56,7 @@ def load_template(name: str):
         return matches[0]
     if len(matches) > 1:
         options = [
-            f"{m['_storage_key']}（{m.get('name', m['_storage_key'])} · {m.get('category', '未分类')}）"
+            f"{m['_storage_key']}（{m.get('name', m['_storage_key'])} · {normalize_template_category(m.get('category', '未分类'))}）"
             for m in matches
         ]
         raise FileNotFoundError(
@@ -75,7 +78,9 @@ def list_templates():
                 bg = d.get("background_path", "")
                 key = fn[:-5]
                 name = d.get("name", key)
-                category = d.get("category", "教师场景")
+                category = normalize_template_category(d.get("category", "教室场景"))
+                d["category"] = category
+                d["render_preset"] = normalize_render_preset(category, d.get("render_preset"))
                 templates.append({
                     "key": key,
                     "name": name,
@@ -218,7 +223,10 @@ def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: 
             print(f"[错误] {exc}", file=sys.stderr)
             sys.exit(1)
         tpl_key = tpl.get("_storage_key", tpl_name)
-        tpl_label = f"{tpl.get('name', tpl_key)} · {tpl.get('category', '未分类')}"
+        category = normalize_template_category(tpl.get("category", "未分类"))
+        tpl["category"] = category
+        tpl["render_preset"] = normalize_render_preset(category, tpl.get("render_preset"))
+        tpl_label = f"{tpl.get('name', tpl_key)} · {category}"
         bg_path = tpl["background_path"]
         if not os.path.exists(bg_path):
             print(f"[错误] 模板 {tpl_label} 的背景图不存在：{bg_path}", file=sys.stderr)
