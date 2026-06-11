@@ -496,12 +496,33 @@ def _category_sort_key(category: str):
 class SlowTemplateListWidget(QListWidget):
     """Keep template list wheel scrolling controllable on high-resolution mice."""
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
         if delta == 0:
             return super().wheelEvent(event)
         bar = self.verticalScrollBar()
-        step = -1 if delta > 0 else 1
+        step = -10 if delta > 0 else 10
+        bar.setValue(bar.value() + step)
+        event.accept()
+
+
+class SlowScrollArea(QScrollArea):
+    """Use small fixed wheel steps for dense sidebar forms."""
+
+    def __init__(self, parent=None, wheel_step=16):
+        super().__init__(parent)
+        self._wheel_step = wheel_step
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return super().wheelEvent(event)
+        bar = self.verticalScrollBar()
+        step = -self._wheel_step if delta > 0 else self._wheel_step
         bar.setValue(bar.value() + step)
         event.accept()
 
@@ -732,7 +753,7 @@ class MainWindow(QMainWindow):
         sv.setContentsMargins(0, 0, 0, 0); sv.setSpacing(0)
 
         # ── Scrollable form content ────────────────────────────────────────────
-        sb_scroll = QScrollArea()
+        sb_scroll = SlowScrollArea(wheel_step=16)
         sb_scroll.setWidgetResizable(True)
         sb_scroll.setFrameShape(QFrame.Shape.NoFrame)
         sb_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
