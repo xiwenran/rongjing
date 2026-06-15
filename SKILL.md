@@ -56,6 +56,10 @@ cd ~/rongjing && python3 cli.py process \
 - 使用了哪些模板
 - 输出目录在哪里（可点击打开）
 
+**Token 节制要求（与 ppt-batch-tool 衔接）**：融景环节只输出摘要给上下文，不读完整生成 JSON。
+报告格式：主题数、模板数、缺图/失败项（文件名）、输出目录。不逐一展开每张合成图路径。
+若上游已有 `convert_summary.json`，直接引用其 `success_count` 和 `output_dir`，无需重新列举图片文件。
+
 **多主题任务的后续衔接**：若本次合成了多个主题，完成重整脚本（把连续编号切回「主题/模板/图片」结构）并验证文件数正确后，下一步取决于起点——从 PPT 开始的全链路任务走 **zhifa-pipeline** skill；已有合成图只需上传走 **zhifa-upload** skill。
 
 ## 注意事项
