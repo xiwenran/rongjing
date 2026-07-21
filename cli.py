@@ -17,6 +17,7 @@ import shutil
 import sys
 
 TEMPLATES_DIR = os.path.expanduser("~/Library/Application Support/融景/templates")
+COLLAGES_DIR = os.path.expanduser("~/Library/Application Support/融景/collages")
 
 sys.path.insert(0, os.path.dirname(__file__))
 from models.template_model import normalize_render_preset, normalize_template_category
@@ -262,6 +263,142 @@ def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: 
         _place_covers(output_dir, cover_source)
 
 
+def _parse_pages(pages_arg: str | None, total: int) -> list[int]:
+    """解析 --pages 逗号分隔的 1-based 页序号，返回 0-based 索引列表。"""
+    if not pages_arg:
+        return list(range(total))
+    indices = []
+    for part in pages_arg.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            n = int(part)
+        except ValueError:
+            print(f"[错误] --pages 包含非法页序号：{part}", file=sys.stderr)
+            sys.exit(1)
+        if n < 1 or n > total:
+            print(f"[错误] --pages 页序号 {n} 超出范围（共 {total} 张图）", file=sys.stderr)
+            sys.exit(1)
+        indices.append(n - 1)
+    return indices
+
+
+def collage(input_dir: str, output: str, template_name: str | None,
+            rows: int | None, cols: int | None, pages: str | None,
+            json_result: bool = False):
+    import hashlib
+
+    sys.path.insert(0, os.path.dirname(__file__))
+    from PIL import Image
+    from core.collage_processor import create_collage
+    from models.collage_model import CollageManager
+
+    if template_name and (rows or cols):
+        print("[错误] --template 与 --rows/--cols 二选一，不能同时给出", file=sys.stderr)
+        sys.exit(1)
+    if not template_name and not (rows and cols):
+        print("[错误] 必须指定 --template，或同时指定 --rows 和 --cols", file=sys.stderr)
+        sys.exit(1)
+
+    manager = CollageManager(COLLAGES_DIR)
+
+    if template_name:
+        tpl = manager.load(template_name)
+        if tpl is None:
+            available = manager.names()
+            print(f"[错误] 拼图预设不存在：{template_name}", file=sys.stderr)
+            if available:
+                print(f"  可用预设：{', '.join(available)}", file=sys.stderr)
+            else:
+                print(f"  预设目录为空：{COLLAGES_DIR}", file=sys.stderr)
+            sys.exit(1)
+        layout = tpl.layout
+        use_rows = tpl.rows
+        use_cols = tpl.cols
+        gap = tpl.gap
+        padding = tpl.padding
+        background_color = tpl.background_color
+        cell_aspect_ratio = tpl.cell_aspect_ratio
+        output_width = tpl.output_width
+        output_height = tpl.output_height
+    else:
+        layout = "grid"
+        use_rows = rows
+        use_cols = cols
+        gap = 4
+        padding = 0
+        background_color = "#FFFFFF"
+        cell_aspect_ratio = 0
+        output_width = 1920
+        output_height = 0
+
+    input_dir = os.path.expanduser(input_dir)
+    if not os.path.isdir(input_dir):
+        print(f"[错误] 输入目录不存在：{input_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    image_paths = collect_images([input_dir])
+    if not image_paths:
+        print(f"[错误] 输入目录下没有找到任何图片：{input_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    page_indices = _parse_pages(pages, len(image_paths))
+    selected_paths = [image_paths[i] for i in page_indices]
+    images = [Image.open(p) for p in selected_paths]
+
+    result = create_collage(
+        images,
+        layout=layout,
+        rows=use_rows,
+        cols=use_cols,
+        gap=gap,
+        padding=padding,
+        background_color=background_color,
+        cell_aspect_ratio=cell_aspect_ratio,
+        output_width=output_width,
+        output_height=output_height,
+    )
+
+    output = os.path.expanduser(output)
+    out_parent = os.path.dirname(output)
+    if out_parent:
+        os.makedirs(out_parent, exist_ok=True)
+    result.save(output)
+
+    sha256 = hashlib.sha256()
+    with open(output, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            sha256.update(chunk)
+
+    info = {
+        "output": output,
+        "size": list(result.size),
+        "sha256": sha256.hexdigest(),
+        "template": {
+            "name": template_name,
+            "layout": layout,
+            "rows": use_rows,
+            "cols": use_cols,
+            "gap": gap,
+            "padding": padding,
+            "background_color": background_color,
+            "cell_aspect_ratio": cell_aspect_ratio,
+            "output_width": output_width,
+            "output_height": output_height,
+        },
+        "input_images": len(image_paths),
+        "used_images": len(selected_paths),
+    }
+
+    if json_result:
+        print(json.dumps(info, ensure_ascii=False))
+    else:
+        print(f"完成！拼图已生成：{output}")
+        print(f"  尺寸：{result.size[0]}x{result.size[1]}")
+        print(f"  sha256：{sha256.hexdigest()}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="融景命令行工具")
     sub = parser.add_subparsers(dest="cmd")
@@ -276,6 +413,15 @@ def main():
     p.add_argument("--cover-source", default=None,
                    help="封面源目录：单一目录（含 0(1).jpg/0(2).jpg/0(3).jpg）或多主题父目录（按名称前 6 字符匹配）")
 
+    c = sub.add_parser("collage", help="将一批图片拼接成单张拼图")
+    c.add_argument("--input-dir", required=True, help="输入图片目录")
+    c.add_argument("--output", required=True, help="输出文件路径")
+    c.add_argument("--template", default=None, help="拼图预设名（如 1 / 2 / 逐字稿），与 --rows/--cols 二选一")
+    c.add_argument("--rows", type=int, default=None, help="行数（与 --cols 搭配使用，不与 --template 同时给出）")
+    c.add_argument("--cols", type=int, default=None, help="列数（与 --rows 搭配使用，不与 --template 同时给出）")
+    c.add_argument("--pages", default=None, help="逗号分隔的 1-based 页序号，默认使用全部图片")
+    c.add_argument("--json-result", action="store_true", help="以 JSON 格式输出结果到 stdout")
+
     args = parser.parse_args()
 
     if args.cmd == "list-templates":
@@ -283,6 +429,9 @@ def main():
     elif args.cmd == "process":
         process(args.input, args.templates, args.output, args.format,
                 cover_source=args.cover_source)
+    elif args.cmd == "collage":
+        collage(args.input_dir, args.output, args.template, args.rows, args.cols,
+                args.pages, json_result=args.json_result)
     else:
         parser.print_help()
 
