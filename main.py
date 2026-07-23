@@ -32,8 +32,9 @@ def get_data_dir() -> str:
 
 def _detect_selftest(image_path: str) -> None:
     """无头自测：RONGJING_DETECT_SELFTEST=<图片路径> 时只跑角点识别并落盘结果，不进 GUI。"""
-    from core.screen_detector import detect_screen_points
-    result = detect_screen_points(image_path)
+    from core.screen_detector import detect_green_screen_points, detect_screen_points
+    # 与 GUI「自动识别」按钮同款路由：绿幕优先，失败退经典
+    result = detect_green_screen_points(image_path) or detect_screen_points(image_path)
     out_path = os.path.join(get_data_dir(), "detect_selftest.txt")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(f"image: {image_path}\nresult: {result}\n")
