@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
 
 
 PointList = list[list[float]]
+
+_WORK_MAX_DIM = 900          # 检测阶段工作分辨率上限（提速+降噪）
+_REFINE_MARGIN_RATIO = 0.08  # 精修裁剪区域相对四边形尺寸外扩比例
+_MIN_AREA_RATIO = 0.18
+_MAX_AREA_RATIO = 0.62
+_ASPECT_MIN = 1.05
+_ASPECT_MAX = 2.2
 
 
 def _log_detect_error(stage: str) -> None:
@@ -32,7 +39,13 @@ def _import_cv2():
 
 
 def detect_screen_points(image) -> Optional[PointList]:
-    """Detect screen quadrilateral points in TL, TR, BR, BL order."""
+    """Detect screen quadrilateral points in TL, TR, BR, BL order.
+
+    算法分三步：
+    1) 在缩小的工作图上用多种互补方法（暗区/亮区/Canny/CLAHE/自适应阈值）生成大量四边形候选；
+    2) 用统一的「边界梯度贴合度 + 内部纹理/亮度惩罚」打分，取分数最高的候选；
+    3) 把该候选映射回原图分辨率，再用局部直线拟合精修四个角点（精修失败则保留粗定位结果）。
+    """
     cv2 = _import_cv2()
     if cv2 is None:
         return None
@@ -41,19 +54,45 @@ def detect_screen_points(image) -> Optional[PointList]:
         return None
 
     try:
-        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-        dark_ratio = float(np.mean(gray < 30))
+        h, w = rgb.shape[:2]
+        gray_full = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
 
-        if dark_ratio > 0.02:
-            points = _detect_solid_black_screen(cv2, gray)
-            if points is not None:
-                return points
+        scale = min(1.0, _WORK_MAX_DIM / float(max(w, h)))
+        if scale < 1.0:
+            small = cv2.resize(gray_full, (int(round(w * scale)), int(round(h * scale))),
+                                interpolation=cv2.INTER_AREA)
+        else:
+            small = gray_full
+        sh, sw = small.shape[:2]
 
-        points = _detect_screen_edges(cv2, gray)
-        if points is not None:
-            return points
+        candidates = _gather_candidates(cv2, small)
+        if not candidates:
+            return None
 
-        return _detect_with_clahe(cv2, gray)
+        gx = cv2.Sobel(small, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(small, cv2.CV_32F, 0, 1, ksize=3)
+        mag = cv2.magnitude(gx, gy)
+        global_mean_mag = float(np.mean(mag)) + 1e-6
+
+        best_quad = None
+        best_score = -1.0
+        for quad, prior in candidates:
+            score = _score_quad(cv2, gx, gy, mag, global_mean_mag, small, quad, sw, sh) * prior
+            if score > best_score:
+                best_score = score
+                best_quad = quad
+
+        if best_quad is None or best_score <= 0:
+            return None
+
+        inv = 1.0 / scale if scale > 0 else 1.0
+        quad_full = _clamp_points([[x * inv, y * inv] for x, y in best_quad], w, h)
+
+        refined_quad = _refine_quad(cv2, gray_full, quad_full, w, h)
+        if refined_quad is not None:
+            quad_full = refined_quad
+
+        return _clamp_points(quad_full, w, h)
     except Exception:
         _log_detect_error("detect")
         return None
@@ -73,171 +112,439 @@ def _load_rgb_array(image) -> Optional[np.ndarray]:
         return None
 
 
-def _interior_std(cv2, gray: np.ndarray, points: PointList) -> float:
-    h, w = gray.shape[:2]
-    pts = np.array(points, dtype=np.int32)
-    mask = np.zeros((h, w), dtype=np.uint8)
-    cv2.fillConvexPoly(mask, pts, 255)
-    interior = gray[mask > 0]
-    if len(interior) == 0:
-        return 999.0
-    return float(interior.std())
+# ---------------------------------------------------------------------------
+# 候选四边形生成
+# ---------------------------------------------------------------------------
+
+def _gather_candidates(cv2, gray: np.ndarray) -> List[Tuple[PointList, float]]:
+    candidates: List[Tuple[PointList, float]] = []
+    candidates.extend(_candidates_from_threshold(cv2, gray, dark=True))
+    candidates.extend(_candidates_from_threshold(cv2, gray, dark=False))
+    candidates.extend(_candidates_from_canny(cv2, gray, use_clahe=False))
+    candidates.extend(_candidates_from_canny(cv2, gray, use_clahe=True))
+    candidates.extend(_candidates_from_adaptive(cv2, gray))
+    return candidates
 
 
-def _detect_solid_black_screen(cv2, gray: np.ndarray) -> Optional[PointList]:
-    h, w = gray.shape[:2]
-    image_area = float(w * h)
-
-    for threshold in (5, 10, 20, 30, 50, 80):
-        mask = np.where(gray < threshold, 255, 0).astype(np.uint8)
-
-        close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
-        open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_kernel)
-
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            continue
-
-        candidates = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area < image_area * 0.03 or area > image_area * 0.95:
-                continue
-            points = _quad_from_contour(cv2, contour)
-            if points is not None:
-                aspect = _quad_aspect_ratio(points)
-                if 0.3 < aspect < 3.5:
-                    std = _interior_std(cv2, gray, points)
-                    candidates.append((std, area, points))
-
-        if not candidates:
-            continue
-
-        # Prefer low interior variance (uniform = screen), break ties by area
-        candidates.sort(key=lambda item: (item[0], -item[1]))
-        best_std, best_area, best_points = candidates[0]
-        if best_std < 40:
-            return _clamp_points(best_points, w, h)
-
-    return None
-
-
-def _detect_screen_edges(cv2, gray: np.ndarray) -> Optional[PointList]:
+def _candidates_from_adaptive(cv2, gray: np.ndarray) -> List[Tuple[PointList, float]]:
+    """自适应局部阈值：整张照片全局对比度很低（黑屏笔记本靠在同样暗的背景前）时，
+    全局阈值/Canny 都找不到有效边界，但屏幕边框在局部范围内仍有细微对比，
+    adaptiveThreshold 按局部均值分割能捕捉到这种弱边界。"""
     h, w = gray.shape[:2]
     image_area = float(w * h)
-
+    out: List[Tuple[PointList, float]] = []
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    best_candidates = []
+
+    for block_size in (31, 61, 101):
+        for c in (2, 5):
+            mask = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                          cv2.THRESH_BINARY_INV, block_size, c)
+            close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+            open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_kernel)
+
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area < image_area * _MIN_AREA_RATIO or area > image_area * _MAX_AREA_RATIO:
+                    continue
+                for quad, prior in _quads_from_contour(cv2, contour):
+                    if _aspect_ok(quad):
+                        out.append((quad, prior))
+
+    return out
+
+
+def _candidates_from_threshold(cv2, gray: np.ndarray, dark: bool) -> List[Tuple[PointList, float]]:
+    h, w = gray.shape[:2]
+    image_area = float(w * h)
+    out: List[Tuple[PointList, float]] = []
+
+    thresholds = (5, 10, 15, 20, 30, 40, 50) if dark else (140, 160, 180, 200, 220)
+    # 多个 open kernel 尺寸：偏暗实拍照片里，屏幕常与旁边同样偏暗的家具/背景连成一片，
+    # 单一 kernel 很难恰好切断这类「细颈」粘连；用不同尺寸各生成一套候选，交给统一打分挑选。
+    open_sizes = (5, 9, 15)
+
+    for threshold in thresholds:
+        if dark:
+            base_mask = np.where(gray < threshold, 255, 0).astype(np.uint8)
+        else:
+            base_mask = np.where(gray > threshold, 255, 0).astype(np.uint8)
+
+        close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+        closed = cv2.morphologyEx(base_mask, cv2.MORPH_CLOSE, close_kernel)
+
+        for open_size in open_sizes:
+            open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (open_size, open_size))
+            mask = cv2.morphologyEx(closed, cv2.MORPH_OPEN, open_kernel)
+
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area < image_area * _MIN_AREA_RATIO or area > image_area * _MAX_AREA_RATIO:
+                    continue
+                # 亮区阈值找的是屏幕内容区域，内容色块贴近某一角时轮廓会被截断，
+                # 额外补一个 minAreaRect / 截角重建候选兜底该角被截断的情况。
+                for quad, prior in _quads_from_contour(cv2, contour, include_min_rect=not dark):
+                    if _aspect_ok(quad):
+                        out.append((quad, prior))
+
+    return out
+
+
+def _candidates_from_canny(cv2, gray: np.ndarray, use_clahe: bool) -> List[Tuple[PointList, float]]:
+    h, w = gray.shape[:2]
+    image_area = float(w * h)
+    out: List[Tuple[PointList, float]] = []
+
+    if use_clahe:
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        src = clahe.apply(gray)
+    else:
+        src = gray
+
+    blurred = cv2.GaussianBlur(src, (5, 5), 0)
 
     for low, high in ((30, 100), (50, 150), (80, 200)):
         edges = cv2.Canny(blurred, low, high)
         edge_ratio = float(np.mean(edges > 0))
-        if edge_ratio > 0.30:
+        if edge_ratio > 0.35:
             continue
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        edges = cv2.dilate(edges, kernel, iterations=1)
-        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area < image_area * 0.03 or area > image_area * 0.90:
-                continue
-
-            perimeter = cv2.arcLength(contour, True)
-            if perimeter <= 0:
-                continue
-            for eps_factor in (0.02, 0.04, 0.06):
-                approx = cv2.approxPolyDP(contour, eps_factor * perimeter, True)
-                if len(approx) == 4 and cv2.isContourConvex(approx):
-                    points = approx.reshape(4, 2).astype(np.float32)
-                    quad_area = cv2.contourArea(points)
-                    if quad_area < image_area * 0.03:
-                        continue
-                    ordered = _order_points(points)
-                    aspect = _quad_aspect_ratio(ordered)
-                    if 0.3 < aspect < 3.5:
-                        std = _interior_std(cv2, gray, ordered)
-                        best_candidates.append((std, quad_area, ordered))
-                    break
-
-    if not best_candidates:
-        return None
-    best_candidates.sort(key=lambda item: (item[0], -item[1]))
-    return _clamp_points(best_candidates[0][2], w, h)
-
-
-def _detect_with_clahe(cv2, gray: np.ndarray) -> Optional[PointList]:
-    """CLAHE contrast enhancement + aggressive edge connection for dark scenes."""
-    h, w = gray.shape[:2]
-    image_area = float(w * h)
-
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
-    blurred = cv2.GaussianBlur(enhanced, (5, 5), 0)
-
-    best_candidates = []
-
-    for low, high in ((30, 100), (50, 150)):
-        edges = cv2.Canny(blurred, low, high)
-
-        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
-        edges = cv2.dilate(edges, dilate_kernel, iterations=2)
+        edges = cv2.dilate(edges, dilate_kernel, iterations=2 if use_clahe else 1)
         edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, close_kernel)
-        edges = cv2.erode(edges, dilate_kernel, iterations=1)
+        if use_clahe:
+            edges = cv2.erode(edges, dilate_kernel, iterations=1)
 
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area < image_area * 0.03 or area > image_area * 0.85:
+            if area < image_area * _MIN_AREA_RATIO or area > image_area * _MAX_AREA_RATIO:
                 continue
+            for quad, prior in _quads_from_contour(cv2, contour):
+                if _aspect_ok(quad):
+                    out.append((quad, prior))
 
-            perimeter = cv2.arcLength(contour, True)
-            if perimeter <= 0:
-                continue
-            for eps_factor in (0.02, 0.04, 0.06, 0.08):
-                approx = cv2.approxPolyDP(contour, eps_factor * perimeter, True)
-                if len(approx) == 4 and cv2.isContourConvex(approx):
-                    points = approx.reshape(4, 2).astype(np.float32)
-                    quad_area = cv2.contourArea(points)
-                    if quad_area < image_area * 0.03:
-                        continue
-                    ordered = _order_points(points)
-                    aspect = _quad_aspect_ratio(ordered)
-                    if 0.3 < aspect < 3.5:
-                        std = _interior_std(cv2, gray, ordered)
-                        best_candidates.append((std, quad_area, ordered))
-                    break
-
-    if not best_candidates:
-        return None
-    best_candidates.sort(key=lambda item: (item[0], -item[1]))
-    return _clamp_points(best_candidates[0][2], w, h)
+    return out
 
 
-def _quad_from_contour(cv2, contour) -> Optional[PointList]:
+def _quads_from_contour(cv2, contour, include_min_rect: bool = False) -> List[Tuple[PointList, float]]:
+    """一个轮廓可能产出多个候选四边形（quad, prior 打分权重）：approxPolyDP 的角点
+    更贴合真实边界，但偶尔会被局部噪声带偏一个角（例如亮区阈值的轮廓被内容色块
+    提前截断一角）；minAreaRect 对这种「三边准一角被截断」更稳健，但刚性旋转矩形
+    可能把误差转嫁到相邻角，此时截角重建（见 _quad_from_cut_corner）更精确，给
+    更高的 prior。默认只在 approx 失败时才补充 minAreaRect（避免候选池噪声过多），
+    只有 include_min_rect=True 的调用方（亮区阈值，已知易被内容色块截断角点）
+    才总是额外补 minAreaRect 与截角重建两种候选。"""
+    results: List[Tuple[PointList, float]] = []
     perimeter = cv2.arcLength(contour, True)
     if perimeter <= 0:
-        return None
+        return results
 
-    for eps_factor in (0.02, 0.04, 0.06):
+    found_approx = False
+    approx_quad = None
+    for eps_factor in (0.02, 0.03, 0.04, 0.06):
         approx = cv2.approxPolyDP(contour, eps_factor * perimeter, True)
         if len(approx) == 4 and cv2.isContourConvex(approx):
-            return _order_points(approx.reshape(4, 2).astype(np.float32))
+            approx_quad = _order_points(approx.reshape(4, 2).astype(np.float32))
+            results.append((approx_quad, 1.0))
+            found_approx = True
+            break
 
-    rect = cv2.minAreaRect(contour)
-    box = cv2.boxPoints(rect).astype(np.float32)
-    box_area = cv2.contourArea(box)
-    contour_area = cv2.contourArea(contour)
-    if box_area <= 0 or contour_area / box_area < 0.80:
+    if include_min_rect or not found_approx:
+        rect = cv2.minAreaRect(contour)
+        box = cv2.boxPoints(rect).astype(np.float32)
+        box_area = cv2.contourArea(box)
+        contour_area = cv2.contourArea(contour)
+        if box_area > 0 and contour_area / box_area >= 0.80:
+            results.append((_order_points(box), 1.0))
+
+    if include_min_rect:
+        # 「截角五边形」修复：内容色块贴近某一角时，凸包会在真实矩形的那个角上
+        # 多切出一条短边（4 边形变成 5 边形），minAreaRect 的刚性旋转矩形又可能
+        # 把误差转嫁到相邻角。用「延长截角两侧的长边求交点」直接还原被切掉的角。
+        # 这类重建候选几何上更可信（3 个角来自实测边界、1 个角是两条长边的精确
+        # 交点），但重建出的角附近采样点落在原本被截断的模糊过渡区，边界打分会
+        # 偏低，所以给它一点先验加成，避免被刚性矩形候选比下去。
+        reconstructed = _quad_from_cut_corner(cv2, contour, approx_quad)
+        if reconstructed is not None:
+            results.append((reconstructed, 1.35))
+
+    return results
+
+
+def _quad_from_cut_corner(cv2, contour, approx_quad: Optional[PointList]) -> Optional[PointList]:
+    hull = cv2.convexHull(contour)
+    peri = cv2.arcLength(hull, True)
+    if peri <= 0:
         return None
-    return _order_points(box)
+    approx = cv2.approxPolyDP(hull, 0.01 * peri, True)
+    if len(approx) != 5:
+        return None
 
+    pts = approx.reshape(5, 2).astype(np.float64)
+    edge_lens = [np.linalg.norm(pts[(i + 1) % 5] - pts[i]) for i in range(5)]
+    cut_idx = int(np.argmin(edge_lens))
+    # 截角边必须明显短于其余边，否则这只是个普通五边形（非「切角」），不做重建
+    other_lens = [edge_lens[i] for i in range(5) if i != cut_idx]
+    if edge_lens[cut_idx] > 0.35 * (sum(other_lens) / len(other_lens)):
+        return None
+
+    prev_pt = pts[(cut_idx - 1) % 5]
+    p0 = pts[cut_idx]
+    p1 = pts[(cut_idx + 1) % 5]
+    next_pt = pts[(cut_idx + 2) % 5]
+
+    corner = _line_intersection(_line_through(prev_pt, p0), _line_through(p1, next_pt))
+    if corner is None:
+        return None
+
+    remaining = [pts[(cut_idx + 2 + i) % 5] for i in range(3)]  # 保留另外 3 个未受影响的角
+    quad = np.array([corner, *remaining], dtype=np.float32)
+    if not cv2.isContourConvex(quad.reshape(-1, 1, 2).astype(np.float32)):
+        return None
+
+    # 一致性校验：五边形有时并非「一个角被截断」，而是反映了另一处完全不同的
+    # 缺口（比如某一侧有条线缆/反光、或轮廓边缘本身有轻微凹凸），此时重建会把
+    # 一个本来定位良好的角搬到错误的位置。用同一轮廓的 approxPolyDP 四边形做
+    # 参照：重建结果里「未受影响」的 3 个角必须能在参照四边形中找到很接近的
+    # 对应角。若这条轮廓根本没有一个干净的 4 边形近似可做参照，说明轮廓形状本身
+    # 不规则，无法可靠判断截角重建是否安全，直接放弃这个候选（宁可不修，不可能错）。
+    if approx_quad is None:
+        return None
+    ref = np.array(approx_quad, dtype=np.float64)
+    max_dim = max(np.ptp(ref[:, 0]), np.ptp(ref[:, 1]))
+    tolerance = max(15.0, max_dim * 0.03)
+    for pt in remaining:
+        nearest = np.min(np.linalg.norm(ref - pt, axis=1))
+        if nearest > tolerance:
+            return None
+
+    return _order_points(quad)
+
+
+def _line_through(p1: np.ndarray, p2: np.ndarray) -> Tuple[float, float, float, float]:
+    d = p2 - p1
+    return (float(p1[0]), float(p1[1]), float(d[0]), float(d[1]))
+
+
+def _aspect_ok(points: PointList) -> bool:
+    ratio = _quad_aspect_ratio(points)
+    return _ASPECT_MIN < ratio < _ASPECT_MAX
+
+
+# ---------------------------------------------------------------------------
+# 统一打分：候选四边形边界与图像梯度的贴合度
+# ---------------------------------------------------------------------------
+
+def _score_quad(cv2, gx: np.ndarray, gy: np.ndarray, mag_map: np.ndarray, global_mean_mag: float,
+                 gray: np.ndarray, quad: PointList, w: int, h: int) -> float:
+    pts = [np.array(p, dtype=np.float64) for p in quad]
+    edges = [(pts[i], pts[(i + 1) % 4]) for i in range(4)]
+
+    sample_xs = []
+    sample_ys = []
+    normals = []
+    n_per_edge = 24
+
+    for a, b in edges:
+        d = b - a
+        length = np.linalg.norm(d)
+        if length < 1e-6:
+            return -1.0
+        d = d / length
+        normal = np.array([-d[1], d[0]])
+        for i in range(n_per_edge):
+            t = 0.12 + 0.76 * (i / (n_per_edge - 1))
+            p = a + t * (b - a)
+            sample_xs.append(p[0])
+            sample_ys.append(p[1])
+            normals.append(normal)
+
+    xs = np.array(sample_xs, dtype=np.float32).reshape(-1, 1)
+    ys = np.array(sample_ys, dtype=np.float32).reshape(-1, 1)
+    valid = (xs[:, 0] >= 0) & (xs[:, 0] <= w - 1) & (ys[:, 0] >= 0) & (ys[:, 0] <= h - 1)
+    if not np.any(valid):
+        return -1.0
+
+    gx_s = cv2.remap(gx, xs, ys, interpolation=cv2.INTER_LINEAR).reshape(-1)
+    gy_s = cv2.remap(gy, xs, ys, interpolation=cv2.INTER_LINEAR).reshape(-1)
+    mag = np.sqrt(gx_s ** 2 + gy_s ** 2)
+
+    normals_arr = np.array(normals)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cos_align = np.abs(gx_s * normals_arr[:, 0] + gy_s * normals_arr[:, 1]) / np.maximum(mag, 1e-6)
+    cos_align = np.nan_to_num(cos_align)
+
+    raw = mag * cos_align
+    score_samples = raw[valid]
+    if score_samples.size == 0:
+        return -1.0
+
+    # 面积先验：实拍场景里屏幕占画面比例集中在 28%~51%（对 28 个标注模板统计），
+    # 用高斯先验强烈偏好该范围，压制「画面里凑巧一小块强对比区域」这类误检。
+    area = cv2.contourArea(np.array(quad, dtype=np.float32))
+    area_ratio = area / float(w * h)
+    area_prior = float(np.exp(-((area_ratio - 0.37) / 0.14) ** 2))
+
+    # 内部纹理惩罚：屏幕内容（哪怕是文字幻灯片）的局部梯度密度远低于键盘/书架等
+    # 强纹理干扰物；用「内部平均梯度 / 全图平均梯度」的比值做惩罚，压制误检。
+    interior_ratio = _interior_texture_ratio(cv2, mag_map, quad, w, h, global_mean_mag)
+    texture_penalty = 1.0 / (1.0 + max(0.0, interior_ratio - 1.0) * 0.6)
+
+    # 内部亮度标准差惩罚：真实屏幕内部（无论纯黑还是内容画面）亮度分布相对连续，
+    # 若候选把屏幕和旁边书架/键盘等完全不同色调的区域圈在一起，标准差会明显偏高。
+    interior_std = _interior_intensity_std(cv2, gray, quad, w, h)
+    std_penalty = 1.0 / (1.0 + max(0.0, interior_std - 45.0) / 35.0)
+
+    return float(np.mean(score_samples)) * max(area_prior, 0.08) * texture_penalty * std_penalty
+
+
+def _interior_intensity_std(cv2, gray: np.ndarray, quad: PointList, w: int, h: int) -> float:
+    pts = np.array(quad, dtype=np.float64)
+    center = pts.mean(axis=0)
+    shrunk = center + (pts - center) * 0.85
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillConvexPoly(mask, shrunk.astype(np.int32), 255)
+    interior = gray[mask > 0]
+    if interior.size == 0:
+        return 0.0
+    return float(np.std(interior))
+
+
+def _interior_texture_ratio(cv2, mag: np.ndarray, quad: PointList, w: int, h: int,
+                             global_mean_mag: float) -> float:
+    pts = np.array(quad, dtype=np.float64)
+    center = pts.mean(axis=0)
+    shrunk = center + (pts - center) * 0.85  # 内缩 15%，避开边界本身的梯度
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillConvexPoly(mask, shrunk.astype(np.int32), 255)
+    interior = mag[mask > 0]
+    if interior.size == 0:
+        return 1.0
+    return float(np.mean(interior)) / global_mean_mag
+
+
+# ---------------------------------------------------------------------------
+# 角点精修：在原图分辨率上，沿每条边做局部梯度极值搜索 + 直线拟合
+# ---------------------------------------------------------------------------
+
+def _refine_quad(cv2, gray_full: np.ndarray, quad: PointList, w: int, h: int) -> Optional[PointList]:
+    """在原图分辨率上沿每条边做局部梯度极值搜索 + 直线拟合，修正粗定位（在缩小
+    工作图上找到）的角点误差。任何一步不可靠就返回 None，调用方回退到粗定位结果。"""
+    try:
+        xs = [p[0] for p in quad]
+        ys = [p[1] for p in quad]
+        qw = max(xs) - min(xs)
+        qh = max(ys) - min(ys)
+        margin = int(round(max(qw, qh) * _REFINE_MARGIN_RATIO)) + 5
+
+        x0 = max(0, int(min(xs)) - margin)
+        y0 = max(0, int(min(ys)) - margin)
+        x1 = min(w, int(max(xs)) + margin)
+        y1 = min(h, int(max(ys)) + margin)
+        if x1 - x0 < 10 or y1 - y0 < 10:
+            return None
+
+        crop = gray_full[y0:y1, x0:x1]
+        crop_gx = cv2.Sobel(crop, cv2.CV_32F, 1, 0, ksize=3)
+        crop_gy = cv2.Sobel(crop, cv2.CV_32F, 0, 1, ksize=3)
+        ch, cw = crop.shape[:2]
+        crop_mag_mean = float(np.mean(cv2.magnitude(crop_gx, crop_gy))) + 1e-6
+        # 边缘点必须显著强于裁剪区域的平均梯度水平，否则近乎无纹理的画面里任何
+        # 噪声起伏都会被当成「找到了边缘」。
+        mag_threshold = max(6.0, crop_mag_mean * 3.0)
+
+        local_pts = [np.array([p[0] - x0, p[1] - y0], dtype=np.float64) for p in quad]
+        search_range = max(6.0, max(qw, qh) * 0.012)
+        search_range = min(search_range, 25.0)
+
+        refined_lines = []
+        for i in range(4):
+            a = local_pts[i]
+            b = local_pts[(i + 1) % 4]
+            line = _refine_edge_line(cv2, crop_gx, crop_gy, a, b, cw, ch, search_range, mag_threshold)
+            if line is None:
+                return None
+            refined_lines.append(line)
+
+        new_corners = []
+        for i in range(4):
+            prev_line = refined_lines[(i - 1) % 4]
+            curr_line = refined_lines[i]
+            inter = _line_intersection(prev_line, curr_line)
+            if inter is None:
+                return None
+            new_corners.append(inter)
+
+        # 精修结果离粗定位太远则视为失败，回退到原始角点
+        for orig, new in zip(local_pts, new_corners):
+            if np.linalg.norm(np.array(new) - orig) > search_range * 3:
+                return None
+
+        result = [[float(p[0] + x0), float(p[1] + y0)] for p in new_corners]
+        return _order_points(np.array(result, dtype=np.float32))
+    except Exception:
+        return None
+
+
+def _refine_edge_line(cv2, gx: np.ndarray, gy: np.ndarray, a: np.ndarray, b: np.ndarray,
+                       w: int, h: int, search_range: float, mag_threshold: float):
+    d = b - a
+    length = np.linalg.norm(d)
+    if length < 1e-6:
+        return None
+    d = d / length
+    normal = np.array([-d[1], d[0]])
+
+    n_samples = 30
+    edge_points = []
+    steps = np.linspace(-search_range, search_range, int(search_range * 2) + 1)
+
+    for i in range(n_samples):
+        t = 0.1 + 0.8 * (i / (n_samples - 1))
+        p = a + t * (b - a)
+        probe_x = p[0] + steps * normal[0]
+        probe_y = p[1] + steps * normal[1]
+        valid = (probe_x >= 0) & (probe_x <= w - 1) & (probe_y >= 0) & (probe_y <= h - 1)
+        if not np.any(valid):
+            continue
+        px = probe_x[valid].astype(np.float32).reshape(-1, 1)
+        py = probe_y[valid].astype(np.float32).reshape(-1, 1)
+        gxv = cv2.remap(gx, px, py, interpolation=cv2.INTER_LINEAR).reshape(-1)
+        gyv = cv2.remap(gy, px, py, interpolation=cv2.INTER_LINEAR).reshape(-1)
+        mag = np.sqrt(gxv ** 2 + gyv ** 2)
+        if mag.size == 0:
+            continue
+        best_idx = int(np.argmax(mag))
+        if mag[best_idx] < mag_threshold:
+            continue
+        edge_points.append((px[best_idx, 0], py[best_idx, 0]))
+
+    if len(edge_points) < max(6, n_samples // 3):
+        return None
+
+    pts = np.array(edge_points, dtype=np.float32)
+    vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_HUBER, 0, 0.01, 0.01).reshape(-1)
+    return (float(x0), float(y0), float(vx), float(vy))
+
+
+def _line_intersection(l1, l2) -> Optional[Tuple[float, float]]:
+    x1, y1, dx1, dy1 = l1
+    x2, y2, dx2, dy2 = l2
+    denom = dx1 * dy2 - dy1 * dx2
+    if abs(denom) < 1e-9:
+        return None
+    t = ((x2 - x1) * dy2 - (y2 - y1) * dx2) / denom
+    return (x1 + t * dx1, y1 + t * dy1)
+
+
+# ---------------------------------------------------------------------------
+# 通用几何工具
+# ---------------------------------------------------------------------------
 
 def _order_points(points: np.ndarray) -> PointList:
     pts = points.astype(np.float32)
