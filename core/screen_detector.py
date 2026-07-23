@@ -88,14 +88,155 @@ def detect_screen_points(image) -> Optional[PointList]:
         inv = 1.0 / scale if scale > 0 else 1.0
         quad_full = _clamp_points([[x * inv, y * inv] for x, y in best_quad], w, h)
 
-        refined_quad = _refine_quad(cv2, gray_full, quad_full, w, h)
-        if refined_quad is not None:
-            quad_full = refined_quad
+        quad_full = _refine_quad_guarded(cv2, gray_full, quad_full, w, h, scale,
+                                          gx, gy, mag, global_mean_mag, small, sw, sh)
 
         return _clamp_points(quad_full, w, h)
     except Exception:
         _log_detect_error("detect")
         return None
+
+
+def _refine_quad_guarded(cv2, gray_full: np.ndarray, quad_full: PointList, w: int, h: int,
+                          scale: float, gx: np.ndarray, gy: np.ndarray, mag: np.ndarray,
+                          global_mean_mag: float, small: np.ndarray, sw: int, sh: int) -> PointList:
+    """`_refine_quad` 精修「越修越歪」防护：精修后不无条件采用，而是用同一套
+    `_score_quad` 边界梯度贴合度打分，在工作图坐标系下比较精修前后两个四边形，
+    精修后分数没有更高就丢弃精修结果、保留精修前（粗定位）的四边形。
+
+    （实测案例：10_bg.JPG 精修前约 115px 误差，精修后被带偏到约 141px——本防护
+    正是为了拦住这类「精修反而变差」的情况。）
+    """
+    refined_quad = _refine_quad(cv2, gray_full, quad_full, w, h)
+    if refined_quad is None:
+        return quad_full
+
+    pre_small = [[x * scale, y * scale] for x, y in quad_full]
+    post_small = [[x * scale, y * scale] for x, y in refined_quad]
+
+    try:
+        score_pre = _score_quad(cv2, gx, gy, mag, global_mean_mag, small, pre_small, sw, sh)
+        score_post = _score_quad(cv2, gx, gy, mag, global_mean_mag, small, post_small, sw, sh)
+    except Exception:
+        return quad_full
+
+    return refined_quad if score_post >= score_pre else quad_full
+
+
+# ---------------------------------------------------------------------------
+# VLM 融合识别：经典候选 + ark-worker 粗框，IoU 作为强先验参与打分/兜底
+# ---------------------------------------------------------------------------
+
+_VLM_IOU_AGREE = 0.30   # 经典候选与 VLM 粗框的 IoU 达到此值才算「基本认可这个候选」
+_VLM_IOU_WEIGHT = 2.0   # IoU 对打分的放大权重
+
+
+def detect_screen_points_vlm(image, vlm_quad: Optional[PointList] = None,
+                              vlm_timeout: int = 120) -> Optional[PointList]:
+    """经典算法 + VLM 粗定位融合识别。
+
+    vlm_quad 为 None 时会尝试调用本机 ark-worker 打杂端获取一次粗框（原图像素坐标，
+    TL/TR/BR/BL 顺序）；也可以由调用方预先获取好传入，避免重复调用同一张图（批量/
+    基准测试场景）。VLM 不可用（脚本缺失/超时/解析失败/无网）时行为退化为与
+    detect_screen_points 完全一致——只用经典候选与打分，不报错。
+
+    融合策略（VLM 粗框全程只是「候选 + 先验」，从不脱离统一打分被盲目信任）：
+    1) VLM 粗框本身作为一个额外候选加入候选池（不受面积/宽高比过滤，因为它就是用来
+       兜底经典候选整体跑偏的情况）；
+    2) 其余经典候选里，与 VLM 粗框 IoU 越高的，打分被放大越多——纠正「候选生成阶段
+       其实产生过正确候选，但打分阶段选错」的情况；
+    3) 最终仍是同一套「边界梯度贴合度」打分选出最高分候选，VLM 粗框只有在它本身也
+       贴合真实边界（打分高）或没有更好的经典候选时才会真正胜出，避免 VLM 定位偏差
+       较大时把本来还凑合的经典结果替换成更差的结果（已用近黑关屏样本验证）。
+    """
+    cv2 = _import_cv2()
+    if cv2 is None:
+        return None
+    rgb = _load_rgb_array(image)
+    if rgb is None:
+        return None
+
+    try:
+        h, w = rgb.shape[:2]
+        gray_full = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
+        scale = min(1.0, _WORK_MAX_DIM / float(max(w, h)))
+        if scale < 1.0:
+            small = cv2.resize(gray_full, (int(round(w * scale)), int(round(h * scale))),
+                                interpolation=cv2.INTER_AREA)
+        else:
+            small = gray_full
+        sh, sw = small.shape[:2]
+
+        candidates = _gather_candidates(cv2, small)
+
+        if vlm_quad is None and isinstance(image, (str, os.PathLike)):
+            from core.vlm_locator import locate_screen_quad
+            vlm_quad = locate_screen_quad(str(image), (w, h), timeout=vlm_timeout)
+
+        vlm_small = None
+        if vlm_quad is not None:
+            vlm_small = [[x * scale, y * scale] for x, y in vlm_quad]
+            # VLM 候选本身也进入候选池：prior=1.0（中性），不因面积/宽高比被提前过滤——
+            # 它存在的意义就是在经典候选整体跑偏时兜底。
+            candidates = list(candidates) + [(vlm_small, 1.0)]
+
+        if not candidates:
+            return None
+
+        gx = cv2.Sobel(small, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(small, cv2.CV_32F, 0, 1, ksize=3)
+        mag = cv2.magnitude(gx, gy)
+        global_mean_mag = float(np.mean(mag)) + 1e-6
+
+        best_quad = None
+        best_score = -1.0
+        for quad, prior in candidates:
+            try:
+                score = _score_quad(cv2, gx, gy, mag, global_mean_mag, small, quad, sw, sh) * prior
+            except Exception:
+                continue
+            iou = _quad_iou(cv2, quad, vlm_small) if vlm_small is not None else 0.0
+            fused = score * (1.0 + _VLM_IOU_WEIGHT * iou) if vlm_small is not None else score
+            if fused > best_score:
+                best_score = fused
+                best_quad = quad
+
+        if best_quad is None or best_score <= 0:
+            return None
+
+        inv = 1.0 / scale if scale > 0 else 1.0
+        quad_full = _clamp_points([[x * inv, y * inv] for x, y in best_quad], w, h)
+
+        quad_full = _refine_quad_guarded(cv2, gray_full, quad_full, w, h, scale,
+                                          gx, gy, mag, global_mean_mag, small, sw, sh)
+
+        return _clamp_points(quad_full, w, h)
+    except Exception:
+        _log_detect_error("detect_vlm")
+        return None
+
+
+def _quad_iou(cv2, quad_a: PointList, quad_b: Optional[PointList]) -> float:
+    """两个凸四边形的 IoU（工作图坐标系下计算，尺度一致，不影响比值）。"""
+    if quad_b is None:
+        return 0.0
+    try:
+        a = np.array(quad_a, dtype=np.float32).reshape(-1, 1, 2)
+        b = np.array(quad_b, dtype=np.float32).reshape(-1, 1, 2)
+        area_a = cv2.contourArea(a)
+        area_b = cv2.contourArea(b)
+        if area_a <= 0 or area_b <= 0:
+            return 0.0
+        inter_area, _ = cv2.intersectConvexConvex(a, b)
+        if inter_area <= 0:
+            return 0.0
+        union = area_a + area_b - inter_area
+        if union <= 0:
+            return 0.0
+        return float(inter_area / union)
+    except Exception:
+        return 0.0
 
 
 def _load_rgb_array(image) -> Optional[np.ndarray]:

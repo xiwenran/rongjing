@@ -467,10 +467,10 @@ def _draw_quad_preview(bg_path: str, points: list, out_path: str) -> None:
 
 
 def create_template(bg: str, name: str | None, category: str, preview_out: str | None,
-                     json_result: bool, force: bool):
+                     json_result: bool, force: bool, use_vlm: bool = True):
     sys.path.insert(0, os.path.dirname(__file__))
     from PIL import Image
-    from core.screen_detector import detect_screen_points
+    from core.screen_detector import detect_screen_points, detect_screen_points_vlm
     from models.template_model import Template, TemplateManager
 
     bg = os.path.expanduser(bg)
@@ -481,7 +481,10 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
     category = normalize_template_category(category or "教师场景")
     manager = TemplateManager(TEMPLATES_DIR)
 
-    points = detect_screen_points(bg)
+    if use_vlm:
+        points = detect_screen_points_vlm(bg)
+    else:
+        points = detect_screen_points(bg)
     if not points:
         print(f"[错误] 未能从背景图中识别出屏幕四角，请检查图片内容或改用 GUI 手工标注：{bg}", file=sys.stderr)
         sys.exit(1)
@@ -580,6 +583,8 @@ def main():
                      help="识别结果预览图输出路径（缺省为背景图同目录 <名字>_preview.jpg）")
     ct.add_argument("--json-result", action="store_true", help="以 JSON 格式输出结果到 stdout")
     ct.add_argument("--force", action="store_true", help="与现有同名同分类模板冲突时覆盖，不加则报错退出")
+    ct.add_argument("--no-vlm", action="store_true",
+                     help="禁用 VLM 粗定位融合，只用纯经典算法识别（默认走 VLM 融合，VLM 不可用时自动降级为纯经典）")
 
     args = parser.parse_args()
 
@@ -593,7 +598,7 @@ def main():
                 args.pages, json_result=args.json_result)
     elif args.cmd == "create-template":
         create_template(args.bg, args.name, args.category, args.preview_out,
-                         args.json_result, args.force)
+                         args.json_result, args.force, use_vlm=not args.no_vlm)
     else:
         parser.print_help()
 
