@@ -240,6 +240,8 @@ _RED   = "#FA5151"   # 危险色
 - [x] 修复打包 .app 里自动角点识别静默失效（main.py 冻结环境跳过 sys.path.insert，见踩坑 21）；识别失败落盘 detect_error.log + RONGJING_DETECT_SELFTEST 无头自测入口
 - [x] CLI 新增 `create-template` 子命令：背景图 → 自动识别角点 → 生成模板（复用 TemplateManager 存储约定），附带识别框预览图与质量指标（面积占比/宽高比/是否触边），识别失败非零退出不静默；为「Codex 生背景 → 自动建模板 → 合成发布」流水线提供无 GUI 建模板能力
 - [x] 屏幕角点识别算法重写（五路候选生成 + 统一梯度打分 + 角点直线拟合精修；28 模板基准识别失败清零、精度大幅提升，近黑关屏笔记本类场景仍为已知难点）
+- [x] VLM 粗框融合识别（core/vlm_locator.py 调 ark-worker 看图粗定位 + IoU 先验参与打分，不可用时逐位退回经典）与精修保护（_refine_quad_guarded 精修变差即丢弃）
+- [x] 绿幕背景检测路径：AI 生成背景按「屏幕纯绿幕」约束出图，detect_green_screen_points 颜色分割像素级出角点（角点外扩 8px 实测零渗色），create-template 自动路由，普通图不受影响
 - [x] AI 背景页新增背景场景：教师场景、台式机电脑、笔记本室内、文档纸张、自定义场景；生成张数支持 1-8 张自定义
 
 ---
