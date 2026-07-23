@@ -7,10 +7,13 @@
   python cli.py list-templates
   python cli.py process --input <文件夹或图片路径...> --templates <模板名...> --output <输出目录> [--format PNG|JPEG]
   python cli.py process ... --cover-source <封面源路径>
+  python cli.py create-template --bg <背景图路径> [--name <模板名>] [--category <分类>] \
+      [--preview-out <预览图路径>] [--json-result] [--force]
 """
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -399,6 +402,153 @@ def collage(input_dir: str, output: str, template_name: str | None,
         print(f"  sha256：{sha256.hexdigest()}")
 
 
+def _default_template_name(manager, category: str, bg_path: str) -> str:
+    """从背景图文件名派生一个不与现有「同名同分类」模板冲突的默认模板名。"""
+    stub = os.path.splitext(os.path.basename(bg_path))[0].strip()
+    stub = re.sub(r'[\\/:\*\?"<>\|]+', "_", stub)[:24] or "模板"
+    candidate = f"{stub}_自动识别"
+    idx = 2
+    while manager.key_for_name_category(candidate, category) is not None:
+        candidate = f"{stub}_自动识别_{idx}"
+        idx += 1
+    return candidate
+
+
+def _quad_quality(points: list, img_w: int, img_h: int) -> dict:
+    """计算四边形质量指标：面积占比、宽高比、是否触及图像边缘。"""
+    n = len(points)
+    area = 0.0
+    for i in range(n):
+        x1, y1 = points[i]
+        x2, y2 = points[(i + 1) % n]
+        area += x1 * y2 - x2 * y1
+    area = abs(area) / 2.0
+    image_area = float(img_w * img_h) or 1.0
+
+    tl, tr, br, bl = points
+    top_w = math.hypot(tr[0] - tl[0], tr[1] - tl[1])
+    bottom_w = math.hypot(br[0] - bl[0], br[1] - bl[1])
+    left_h = math.hypot(bl[0] - tl[0], bl[1] - tl[1])
+    right_h = math.hypot(br[0] - tr[0], br[1] - tr[1])
+    avg_w = (top_w + bottom_w) / 2.0
+    avg_h = (left_h + right_h) / 2.0
+
+    margin = max(2.0, min(img_w, img_h) * 0.01)
+    touches_edge = any(
+        x <= margin or x >= img_w - margin or y <= margin or y >= img_h - margin
+        for x, y in points
+    )
+
+    return {
+        "area_ratio": round(area / image_area, 4),
+        "aspect_ratio": round(avg_w / avg_h, 3) if avg_h > 0 else 0.0,
+        "touches_edge": touches_edge,
+    }
+
+
+def _draw_quad_preview(bg_path: str, points: list, out_path: str) -> None:
+    from PIL import Image, ImageDraw
+
+    with Image.open(bg_path) as src:
+        im = src.convert("RGB")
+    draw = ImageDraw.Draw(im)
+    pts = [tuple(p) for p in points]
+    line_width = max(3, int(min(im.size) * 0.004))
+    draw.line(pts + [pts[0]], fill=(255, 32, 32), width=line_width)
+    r = max(6, int(min(im.size) * 0.01))
+    for x, y in pts:
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=(32, 220, 32), outline=(255, 32, 32), width=2)
+
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    save_kwargs = {"quality": 95} if os.path.splitext(out_path)[1].lower() in (".jpg", ".jpeg") else {}
+    im.save(out_path, **save_kwargs)
+
+
+def create_template(bg: str, name: str | None, category: str, preview_out: str | None,
+                     json_result: bool, force: bool):
+    sys.path.insert(0, os.path.dirname(__file__))
+    from PIL import Image
+    from core.screen_detector import detect_screen_points
+    from models.template_model import Template, TemplateManager
+
+    bg = os.path.expanduser(bg)
+    if not os.path.isfile(bg):
+        print(f"[错误] 背景图不存在：{bg}", file=sys.stderr)
+        sys.exit(1)
+
+    category = normalize_template_category(category or "教师场景")
+    manager = TemplateManager(TEMPLATES_DIR)
+
+    points = detect_screen_points(bg)
+    if not points:
+        print(f"[错误] 未能从背景图中识别出屏幕四角，请检查图片内容或改用 GUI 手工标注：{bg}", file=sys.stderr)
+        sys.exit(1)
+
+    if name:
+        existing_key = manager.key_for_name_category(name, category)
+        if existing_key and not force:
+            print(
+                f"[错误] 模板名「{name}」（分类：{category}）已存在，冲突项：{existing_key}.json。"
+                f"如需覆盖请加 --force",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        final_name = name
+        storage_key_hint = existing_key if (existing_key and force) else None
+    else:
+        final_name = _default_template_name(manager, category, bg)
+        storage_key_hint = None
+
+    with Image.open(bg) as im:
+        bg_w, bg_h = im.size
+
+    tpl = Template(
+        name=final_name,
+        background_path=bg,
+        screen_points=points,
+        category=category,
+        template_type="screen",
+    )
+    storage_key = manager.save(tpl, storage_key=storage_key_hint)
+
+    template_path = os.path.join(TEMPLATES_DIR, f"{storage_key}.json")
+    with open(template_path, encoding="utf-8") as f:
+        saved_data = json.load(f)
+    persisted_bg_path = saved_data["background_path"]
+
+    quality = _quad_quality(points, bg_w, bg_h)
+
+    if preview_out:
+        preview_out = os.path.expanduser(preview_out)
+    else:
+        preview_out = os.path.join(os.path.dirname(bg) or ".", f"{final_name}_preview.jpg")
+    _draw_quad_preview(persisted_bg_path, points, preview_out)
+
+    result = {
+        "name": final_name,
+        "key": storage_key,
+        "category": category,
+        "template_path": template_path,
+        "background_path": persisted_bg_path,
+        "preview_path": preview_out,
+        "screen_points": points,
+        "quality": quality,
+    }
+
+    if json_result:
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        print(f"模板已创建：{final_name}（key={storage_key}，分类={category}）")
+        print(f"  模板文件：{template_path}")
+        print(f"  背景图：{persisted_bg_path}")
+        print(f"  预览图：{preview_out}")
+        print(f"  四角坐标：{points}")
+        print(f"  质量指标：面积占比={quality['area_ratio']}，宽高比={quality['aspect_ratio']}，"
+              f"触及边缘={quality['touches_edge']}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="融景命令行工具")
     sub = parser.add_subparsers(dest="cmd")
@@ -422,6 +572,15 @@ def main():
     c.add_argument("--pages", default=None, help="逗号分隔的 1-based 页序号，默认使用全部图片")
     c.add_argument("--json-result", action="store_true", help="以 JSON 格式输出结果到 stdout")
 
+    ct = sub.add_parser("create-template", help="从背景图自动识别屏幕四角并创建模板")
+    ct.add_argument("--bg", required=True, help="背景图路径")
+    ct.add_argument("--name", default=None, help="模板名称（缺省自动从背景图文件名生成不冲突的名字）")
+    ct.add_argument("--category", default="教师场景", help="模板分类（默认：教师场景）")
+    ct.add_argument("--preview-out", default=None,
+                     help="识别结果预览图输出路径（缺省为背景图同目录 <名字>_preview.jpg）")
+    ct.add_argument("--json-result", action="store_true", help="以 JSON 格式输出结果到 stdout")
+    ct.add_argument("--force", action="store_true", help="与现有同名同分类模板冲突时覆盖，不加则报错退出")
+
     args = parser.parse_args()
 
     if args.cmd == "list-templates":
@@ -432,6 +591,9 @@ def main():
     elif args.cmd == "collage":
         collage(args.input_dir, args.output, args.template, args.rows, args.cols,
                 args.pages, json_result=args.json_result)
+    elif args.cmd == "create-template":
+        create_template(args.bg, args.name, args.category, args.preview_out,
+                         args.json_result, args.force)
     else:
         parser.print_help()
 
