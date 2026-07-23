@@ -470,7 +470,11 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
                      json_result: bool, force: bool, use_vlm: bool = True):
     sys.path.insert(0, os.path.dirname(__file__))
     from PIL import Image
-    from core.screen_detector import detect_screen_points, detect_screen_points_vlm
+    from core.screen_detector import (
+        detect_screen_points,
+        detect_screen_points_vlm,
+        detect_green_screen_points,
+    )
     from models.template_model import Template, TemplateManager
 
     bg = os.path.expanduser(bg)
@@ -481,10 +485,16 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
     category = normalize_template_category(category or "教师场景")
     manager = TemplateManager(TEMPLATES_DIR)
 
-    if use_vlm:
+    detect_method = None
+    points = detect_green_screen_points(bg)
+    if points:
+        detect_method = "greenscreen"
+    elif use_vlm:
         points = detect_screen_points_vlm(bg)
+        detect_method = "vlm_fusion"
     else:
         points = detect_screen_points(bg)
+        detect_method = "classic"
     if not points:
         print(f"[错误] 未能从背景图中识别出屏幕四角，请检查图片内容或改用 GUI 手工标注：{bg}", file=sys.stderr)
         sys.exit(1)
@@ -522,6 +532,7 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
     persisted_bg_path = saved_data["background_path"]
 
     quality = _quad_quality(points, bg_w, bg_h)
+    quality["method"] = detect_method
 
     if preview_out:
         preview_out = os.path.expanduser(preview_out)
@@ -549,7 +560,7 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
         print(f"  预览图：{preview_out}")
         print(f"  四角坐标：{points}")
         print(f"  质量指标：面积占比={quality['area_ratio']}，宽高比={quality['aspect_ratio']}，"
-              f"触及边缘={quality['touches_edge']}")
+              f"触及边缘={quality['touches_edge']}，识别方式={quality['method']}")
 
 
 def main():

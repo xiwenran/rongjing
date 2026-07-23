@@ -217,6 +217,99 @@ def detect_screen_points_vlm(image, vlm_quad: Optional[PointList] = None,
         return None
 
 
+# ---------------------------------------------------------------------------
+# 绿幕识别：AI 生成背景图按「屏幕为纯绿幕」约束时，直接找绿色矩形，比猜边界更可靠
+# ---------------------------------------------------------------------------
+
+_GREEN_MIN_AREA_RATIO = 0.03      # 绿区占画面比例低于此值判定为「不是绿幕图」
+_GREEN_MIN_RECT_FILL = 0.85       # minAreaRect 兜底时轮廓面积/外接矩形面积的最低填充率
+_GREEN_EXPAND_PX = 8.0            # 角点沿四边形中心向外扩张的像素数，贴住屏幕黑边框，避免合成羽化渗绿边
+                                   # （实测：2-3px 不足以完全盖住渗色，样例图 + 4 张 PPT 截图合成验证 8px 时
+                                   # 边界内外 5px 环带绿色像素数归零，见 docs/roadmap 交付回执）
+
+
+def detect_green_screen_points(image) -> Optional[PointList]:
+    """在「屏幕区域被约束为纯绿幕」的 AI 生成背景图上，直接用颜色分割找屏幕四角。
+
+    流程：HSV 绿色阈值分割 → 形态学去噪 → 取最大连通区 → 四边形拟合（approxPolyDP，
+    失败则退化到 minAreaRect 并要求填充率达标）→ 角点沿四边形中心向外扩张（贴到
+    屏幕黑色边框上，实测需 8px 才能完全盖住渗色，见 _GREEN_EXPAND_PX 注释）。
+    合成时 embed_image_pil 的 inward 羽化会让边界像素与背景混合，角点若恰好落在
+    绿区边沿会把绿色渗进最终合成图，外扩后羽化混合的是黑边框而非绿幕。
+
+    绿区面积占比过低，或既拟合不出凸四边形、minAreaRect 填充率也不达标时，判定为
+    「不是绿幕图」，返回 None，交由调用方回退到经典/VLM 识别。
+    """
+    cv2 = _import_cv2()
+    if cv2 is None:
+        return None
+    rgb = _load_rgb_array(image)
+    if rgb is None:
+        return None
+
+    try:
+        h, w = rgb.shape[:2]
+        image_area = float(w * h)
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        lower = np.array([40, 120, 120], dtype=np.uint8)
+        upper = np.array([80, 255, 255], dtype=np.uint8)
+        mask = cv2.inRange(hsv, lower, upper)
+
+        close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
+        open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_kernel)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        contour = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(contour)
+        if area < image_area * _GREEN_MIN_AREA_RATIO:
+            return None
+
+        quad = None
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter > 0:
+            for eps_factor in (0.02, 0.03, 0.04, 0.06):
+                approx = cv2.approxPolyDP(contour, eps_factor * perimeter, True)
+                if len(approx) == 4 and cv2.isContourConvex(approx):
+                    quad = _order_points(approx.reshape(4, 2).astype(np.float32))
+                    break
+
+        if quad is None:
+            rect = cv2.minAreaRect(contour)
+            box = cv2.boxPoints(rect).astype(np.float32)
+            box_area = cv2.contourArea(box)
+            if box_area <= 0 or area / box_area < _GREEN_MIN_RECT_FILL:
+                return None
+            quad = _order_points(box)
+
+        quad = _expand_quad_outward(quad, _GREEN_EXPAND_PX)
+        return _clamp_points(quad, w, h)
+    except Exception:
+        _log_detect_error("detect_green_screen")
+        return None
+
+
+def _expand_quad_outward(quad: PointList, expand_px: float) -> PointList:
+    """把四边形每个角点沿「中心→角点」方向向外平移 expand_px 像素。"""
+    pts = np.array(quad, dtype=np.float64)
+    center = pts.mean(axis=0)
+    result = []
+    for p in pts:
+        direction = p - center
+        norm = np.linalg.norm(direction)
+        if norm < 1e-6:
+            result.append([float(p[0]), float(p[1])])
+            continue
+        unit = direction / norm
+        moved = p + unit * expand_px
+        result.append([float(moved[0]), float(moved[1])])
+    return result
+
+
 def _quad_iou(cv2, quad_a: PointList, quad_b: Optional[PointList]) -> float:
     """两个凸四边形的 IoU（工作图坐标系下计算，尺度一致，不影响比值）。"""
     if quad_b is None:
