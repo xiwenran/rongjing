@@ -26,7 +26,7 @@ from models.template_model import (
 )
 from core.batch_runner import BatchRunner, VideoRunner, get_image_files, natural_sort_key
 from core.ai_background import normalize_base_url
-from core.screen_detector import detect_screen_points
+from core.screen_detector import detect_screen_points, detect_green_screen_points
 from ui.canvas_widget import CanvasWidget
 
 # ── WeChat-style Light Mode palette ──────────────────────────────────────────
@@ -1706,7 +1706,9 @@ class MainWindow(QMainWindow):
             self._update_auto_detect_enabled()
             return
 
-        points = detect_screen_points(bg)
+        points = detect_green_screen_points(bg)
+        if points is None:
+            points = detect_screen_points(bg)
         if points is None:
             QMessageBox.warning(self, "提示", "未能自动识别屏幕区域，请手动标注")
             return

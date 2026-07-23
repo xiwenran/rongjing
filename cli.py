@@ -467,8 +467,11 @@ def _draw_quad_preview(bg_path: str, points: list, out_path: str) -> None:
 
 
 def create_template(bg: str, name: str | None, category: str, preview_out: str | None,
-                     json_result: bool, force: bool, use_vlm: bool = True):
+                     json_result: bool, force: bool, use_vlm: bool = True,
+                     min_screen_width: int = 1600):
     sys.path.insert(0, os.path.dirname(__file__))
+    import math
+    import tempfile
     from PIL import Image
     from core.screen_detector import (
         detect_screen_points,
@@ -499,6 +502,28 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
         print(f"[错误] 未能从背景图中识别出屏幕四角，请检查图片内容或改用 GUI 手工标注：{bg}", file=sys.stderr)
         sys.exit(1)
 
+    # 屏幕区域宽度（TL-TR 距离）过窄时，放大整张背景图以降低 PPT 内容压缩比，避免嵌入后文字模糊
+    naming_bg = bg  # 用于默认模板命名，放大后仍取原始文件名
+    screen_width = math.hypot(points[1][0] - points[0][0], points[1][1] - points[0][1])
+    upscale_factor = 1.0
+    if screen_width > 0 and screen_width < min_screen_width:
+        upscale_factor = min(min_screen_width / screen_width, 3.0)
+
+    if upscale_factor > 1.0:
+        with Image.open(bg) as src_im:
+            src_im = src_im.convert("RGB")
+            new_w = round(src_im.width * upscale_factor)
+            new_h = round(src_im.height * upscale_factor)
+            upscaled = src_im.resize((new_w, new_h), Image.LANCZOS)
+        ext = os.path.splitext(bg)[1] or ".png"
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=f"_upscaled{ext}")
+        os.close(tmp_fd)
+        save_kwargs = {"quality": 95} if ext.lower() in (".jpg", ".jpeg") else {}
+        upscaled.save(tmp_path, **save_kwargs)
+        points = [[x * upscale_factor, y * upscale_factor] for x, y in points]
+        screen_width *= upscale_factor
+        bg = tmp_path
+
     if name:
         existing_key = manager.key_for_name_category(name, category)
         if existing_key and not force:
@@ -511,7 +536,7 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
         final_name = name
         storage_key_hint = existing_key if (existing_key and force) else None
     else:
-        final_name = _default_template_name(manager, category, bg)
+        final_name = _default_template_name(manager, category, naming_bg)
         storage_key_hint = None
 
     with Image.open(bg) as im:
@@ -526,6 +551,9 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
     )
     storage_key = manager.save(tpl, storage_key=storage_key_hint)
 
+    if upscale_factor > 1.0 and os.path.exists(bg):
+        os.remove(bg)  # 已被 manager.save 复制进 backgrounds_dir，清理放大产生的临时文件
+
     template_path = os.path.join(TEMPLATES_DIR, f"{storage_key}.json")
     with open(template_path, encoding="utf-8") as f:
         saved_data = json.load(f)
@@ -533,6 +561,8 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
 
     quality = _quad_quality(points, bg_w, bg_h)
     quality["method"] = detect_method
+    quality["upscale_factor"] = round(upscale_factor, 3)
+    quality["screen_width"] = round(screen_width, 1)
 
     if preview_out:
         preview_out = os.path.expanduser(preview_out)
@@ -560,7 +590,8 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
         print(f"  预览图：{preview_out}")
         print(f"  四角坐标：{points}")
         print(f"  质量指标：面积占比={quality['area_ratio']}，宽高比={quality['aspect_ratio']}，"
-              f"触及边缘={quality['touches_edge']}，识别方式={quality['method']}")
+              f"触及边缘={quality['touches_edge']}，识别方式={quality['method']}，"
+              f"放大倍数={quality['upscale_factor']}，屏幕宽度={quality['screen_width']}px")
 
 
 def main():
@@ -596,6 +627,8 @@ def main():
     ct.add_argument("--force", action="store_true", help="与现有同名同分类模板冲突时覆盖，不加则报错退出")
     ct.add_argument("--no-vlm", action="store_true",
                      help="禁用 VLM 粗定位融合，只用纯经典算法识别（默认走 VLM 融合，VLM 不可用时自动降级为纯经典）")
+    ct.add_argument("--min-screen-width", type=int, default=1600,
+                     help="屏幕区域最小宽度（像素，默认 1600）；识别出的屏幕宽度低于此值时放大整张背景图（最多 3 倍）以降低 PPT 内容压缩比")
 
     args = parser.parse_args()
 
@@ -609,7 +642,8 @@ def main():
                 args.pages, json_result=args.json_result)
     elif args.cmd == "create-template":
         create_template(args.bg, args.name, args.category, args.preview_out,
-                         args.json_result, args.force, use_vlm=not args.no_vlm)
+                         args.json_result, args.force, use_vlm=not args.no_vlm,
+                         min_screen_width=args.min_screen_width)
     else:
         parser.print_help()
 
