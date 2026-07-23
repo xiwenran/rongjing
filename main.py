@@ -1,7 +1,11 @@
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 仅源码运行时需要把仓库目录加进搜索路径；冻结 app 里这行会把 Frameworks
+# （含 cv2 源码包目录）顶到 sys.path[0]，遮蔽 cv2 引导器插入的二进制目录，
+# 触发 "recursion is detected during loading of cv2" 导致自动识别静默失效。
+if not getattr(sys, "frozen", False):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
@@ -26,7 +30,21 @@ def get_data_dir() -> str:
         return os.path.expanduser(f"~/.{APP_NAME}")
 
 
+def _detect_selftest(image_path: str) -> None:
+    """无头自测：RONGJING_DETECT_SELFTEST=<图片路径> 时只跑角点识别并落盘结果，不进 GUI。"""
+    from core.screen_detector import detect_screen_points
+    result = detect_screen_points(image_path)
+    out_path = os.path.join(get_data_dir(), "detect_selftest.txt")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(f"image: {image_path}\nresult: {result}\n")
+    sys.exit(0 if result else 1)
+
+
 def main():
+    selftest = os.environ.get("RONGJING_DETECT_SELFTEST")
+    if selftest:
+        _detect_selftest(selftest)
+
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")

@@ -10,11 +10,24 @@ from PIL import Image
 PointList = list[list[float]]
 
 
+def _log_detect_error(stage: str) -> None:
+    """把识别失败的完整堆栈写入数据目录日志，打包 .app 里无控制台时这是唯一现场。"""
+    import traceback
+    try:
+        from main import get_data_dir
+        log_path = os.path.join(get_data_dir(), "detect_error.log")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"===== {stage} =====\n{traceback.format_exc()}\n")
+    except Exception:
+        pass
+
+
 def _import_cv2():
     try:
         import cv2
         return cv2
-    except ImportError:
+    except Exception:
+        _log_detect_error("import cv2")
         return None
 
 
@@ -27,19 +40,23 @@ def detect_screen_points(image) -> Optional[PointList]:
     if rgb is None:
         return None
 
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-    dark_ratio = float(np.mean(gray < 30))
+    try:
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        dark_ratio = float(np.mean(gray < 30))
 
-    if dark_ratio > 0.02:
-        points = _detect_solid_black_screen(cv2, gray)
+        if dark_ratio > 0.02:
+            points = _detect_solid_black_screen(cv2, gray)
+            if points is not None:
+                return points
+
+        points = _detect_screen_edges(cv2, gray)
         if points is not None:
             return points
 
-    points = _detect_screen_edges(cv2, gray)
-    if points is not None:
-        return points
-
-    return _detect_with_clahe(cv2, gray)
+        return _detect_with_clahe(cv2, gray)
+    except Exception:
+        _log_detect_error("detect")
+        return None
 
 
 def _load_rgb_array(image) -> Optional[np.ndarray]:
@@ -52,6 +69,7 @@ def _load_rgb_array(image) -> Optional[np.ndarray]:
             return None
         return np.asarray(pil_image.convert("RGB"))
     except Exception:
+        _log_detect_error("load image")
         return None
 
 
