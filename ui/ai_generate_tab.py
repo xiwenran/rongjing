@@ -69,6 +69,29 @@ _TARGET_SCENES = {
 }
 _CLASSROOM_SCENES = ["小学教室", "中学教室", "多媒体教室"]
 
+# 桌面摆件（台式机/笔记本/文档纸张/自定义场景使用）
+_DESK_DECOR = ["有植物", "有咖啡杯", "有书本", "有小摆件", "极简"]
+# 教室元素（教室场景专用，替代桌面摆件组）
+_CLASSROOM_ELEMENTS = ["学生背影", "粉笔槽板擦", "标语横幅", "国旗", "极简"]
+
+# 灯光选项按背景场景过滤，避免不契合组合（如教室大屏配夜晚暖光台灯）
+_LIGHT_OPTIONS = {
+    "教室场景": ["自然光", "柔光", "冷白光"],
+    "台式机电脑": ["暖色灯光", "自然光", "冷白光"],
+    "笔记本室内": ["暖色灯光", "自然光", "偏暗氛围"],
+    "文档纸张": ["自然光", "柔光", "冷白光"],
+    "自定义场景": ["暖色灯光", "自然光", "冷白光", "柔光", "偏暗氛围"],
+}
+_ANGLE_OPTIONS = ["正面平视", "略偏侧角", "略微仰视"]
+
+# 近景屏幕占比（按场景微调），参考实拍风格基准
+_SCREEN_FILL_RANGE = {
+    "教室场景": (55, 75),
+    "笔记本室内": (60, 75),
+    "台式机电脑": (55, 70),
+    "自定义场景": (60, 70),
+}
+
 
 class TagButton(QPushButton):
     state_changed = pyqtSignal(bool)
@@ -93,6 +116,10 @@ class TagGroup(QWidget):
         self._buttons: list[TagButton] = []
         self._build_ui()
         self.replace_options(list(options))
+
+    def set_label(self, text: str):
+        self._label = text
+        self._title_label.setText(text)
 
     def get_selection(self) -> str:
         for btn in self._buttons:
@@ -144,9 +171,9 @@ class TagGroup(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        title = QLabel(self._label)
-        title.setObjectName("cap")
-        layout.addWidget(title)
+        self._title_label = QLabel(self._label)
+        self._title_label.setObjectName("cap")
+        layout.addWidget(self._title_label)
         self._grid = QGridLayout()
         self._grid.setHorizontalSpacing(6)
         self._grid.setVerticalSpacing(6)
@@ -457,13 +484,16 @@ class AIGenerateTab(QWidget):
         "偏暗氛围": "dim moody atmospheric lighting",
         "正面平视": "front eye-level camera angle",
         "略偏侧角": "slightly side camera angle",
-        "略微俯视": "slightly top-down camera angle",
         "略微仰视": "slightly low-angle camera angle",
         "有植物": "with a small potted plant on the desk",
         "有咖啡杯": "with a coffee cup or tea cup on the desk",
         "有书本": "with Chinese textbooks and exercise notebooks on the desk",
-        "有小摆件": "with a small rubber duck or cute figurine on the desk",
+        "有小摆件": "with a small yellow rubber duck toy or cute figurine on the desk",
         "极简": "minimal clean desktop with nothing extra",
+        "学生背影": "1-2 students visible from behind in the foreground, seated at classroom desks facing the screen, slightly out of focus",
+        "粉笔槽板擦": "a chalk tray with a blackboard eraser visible at the bottom edge of the frame",
+        "标语横幅": "a prominent red banner with bold Chinese calligraphy slogan directly above the screen",
+        "国旗": "a small Chinese national flag clearly visible mounted above the screen",
     }
 
     def __init__(self, backgrounds_dir: str, parent=None):
@@ -541,9 +571,9 @@ class AIGenerateTab(QWidget):
         self._target_group = TagGroup("背景场景", _TARGET_TYPES)
         self._device_group = TagGroup("主体类型", _TARGET_DEVICES["教室场景"])
         self._scene_group = TagGroup("环境位置", _TARGET_SCENES["教室场景"])
-        self._light_group = TagGroup("灯光", ["暖色灯光", "自然光", "冷白光", "柔光", "偏暗氛围"])
-        self._angle_group = TagGroup("拍摄角度", ["正面平视", "略偏侧角", "略微俯视", "略微仰视"])
-        self._decor_group = TagGroup("桌面摆件", ["有植物", "有咖啡杯", "有书本", "有小摆件", "极简"])
+        self._light_group = TagGroup("灯光", _LIGHT_OPTIONS["教室场景"])
+        self._angle_group = TagGroup("拍摄角度", _ANGLE_OPTIONS)
+        self._decor_group = TagGroup("教室元素", _CLASSROOM_ELEMENTS)
         self._tag_groups = [
             self._target_group,
             self._device_group,
@@ -584,6 +614,10 @@ class AIGenerateTab(QWidget):
         row.addWidget(count_box)
         row.addWidget(aspect_box)
         content.addLayout(row)
+
+        self._greenscreen_check = QCheckBox("屏幕显示绿幕（推荐，保存后自动识别秒出角点）")
+        self._greenscreen_check.setChecked(True)
+        content.addWidget(self._greenscreen_check)
 
         self._random_btn = QPushButton("🎲 随机未选项")
         self._random_btn.setObjectName("secondary")
@@ -675,6 +709,15 @@ class AIGenerateTab(QWidget):
         target = value or "教室场景"
         self._device_group.replace_options(_TARGET_DEVICES.get(target, _TARGET_DEVICES["自定义场景"]))
         self._scene_group.replace_options(_TARGET_SCENES.get(target, _TARGET_SCENES["自定义场景"]))
+        self._light_group.replace_options(_LIGHT_OPTIONS.get(target, _LIGHT_OPTIONS["自定义场景"]))
+        if target == "教室场景":
+            self._decor_group.set_label("教室元素")
+            self._decor_group.replace_options(_CLASSROOM_ELEMENTS)
+        else:
+            self._decor_group.set_label("桌面摆件")
+            self._decor_group.replace_options(_DESK_DECOR)
+        # 绿幕开关只对「有屏幕」的场景有意义，文档纸张场景没有屏幕概念
+        self._greenscreen_check.setVisible(target != "文档纸张")
 
     def _on_device_changed(self, value: str):
         if value in ("希沃白板", "教室大屏", "多媒体大屏"):
@@ -692,9 +735,10 @@ class AIGenerateTab(QWidget):
         scene = self._scene_group.get_selection()
         is_document = self._is_document_target(target, device)
         is_classroom = device in ("希沃白板", "教室大屏", "多媒体大屏") or scene in _CLASSROOM_SCENES
+        use_greenscreen = (not is_document) and self._greenscreen_check.isChecked()
 
         parts = [
-            "A candid realistic photograph shot on a smartphone camera",
+            "A candid realistic close-up photograph shot on a smartphone camera",
             "authentic everyday scene with natural imperfections",
             "subtle depth of field, natural lighting variations, slight film grain",
         ]
@@ -715,32 +759,47 @@ class AIGenerateTab(QWidget):
         if scene:
             parts.append(self._TRANSLATIONS.get(scene, scene))
 
-        # 屏幕类场景：屏幕必须是画面主体，占 60-70% 面积
+        # 屏幕类场景：近景硬约束，屏幕占比按场景微调，参考实拍风格基准
         if not is_document and device not in ("纸张区域", "A4 竖版纸", "A4 横版纸"):
-            parts.append("the screen is the dominant element filling 60-70% of the frame")
-            parts.append("close-up composition focused on the screen, minimal surrounding environment")
+            lo, hi = _SCREEN_FILL_RANGE.get(target, (60, 70))
+            parts.append(f"close-up smartphone shot, the screen fills {lo}-{hi}% of the frame")
+            parts.append("vertical portrait framing, minimal surrounding environment beyond the immediate close-up context")
 
-        # Chinese context — classroom vs personal
+        # Chinese context — classroom vs personal desk
         if is_classroom and not is_document:
-            parts.append("Chinese school classroom with red Chinese national flag hanging on wall above the screen")
+            parts.append("Chinese school classroom, red banner with bold Chinese calligraphy slogan and a small Chinese national flag visible in the corner above the screen")
+            parts.append("dark forest-green chalkboard edges visible on both sides of the screen")
             if device == "希沃白板":
-                # 希沃白板：墙上标语保留，但黑板必须干净无板书
-                parts.append("red educational banners with Chinese calligraphy slogans on the wall near the flag")
                 parts.append("if chalkboard is visible it must be completely clean and blank, absolutely no chalk writing, no handwritten text, no diagrams on the board surface")
-            else:
-                parts.append("red educational banners with Chinese calligraphy slogans on the wall")
-                parts.append("green chalkboard visible on the sides of the screen")
-        elif not is_document:
-            parts.append("Chinese domestic or office setting")
+            # 教室元素（学生背影/粉笔槽板擦/标语横幅/国旗/极简）
+            element = self._decor_group.get_selection()
+            if element:
+                parts.append(self._TRANSLATIONS.get(element, element))
+        else:
+            if not is_document:
+                parts.append("Chinese domestic or office setting")
+                if target == "笔记本室内":
+                    parts.append("laptop keyboard and the lower half of the laptop body visible in the lower part of the frame")
+                elif target == "台式机电脑":
+                    parts.append("keyboard and mouse visible on the desk in front of the monitor")
+            # 桌面摆件（有植物/有咖啡杯/有书本/有小摆件/极简），文档纸张场景沿用原有行为
+            decor = self._decor_group.get_selection()
+            if decor:
+                parts.append(self._TRANSLATIONS.get(decor, decor))
 
-        # Screen — must be clean for compositing
+        # Screen / paper surface — must be clean and detectable for compositing
         if is_document:
             parts.append("paper corners clearly visible, realistic perspective, clean composition")
+        elif use_greenscreen:
+            parts.append("the screen displays a solid pure chroma-key green color similar to #00FF00, perfectly flat and uniform across the entire screen surface")
+            parts.append("no gradient, no reflection, no glare, no glossy highlight, no bezel glow on the green screen area")
+            if is_classroom:
+                parts.append("the classroom blackboard is a distinctly dark forest-green tone, clearly different from the bright pure green screen color, the two greens must not be confused")
         else:
             parts.append("screen displays completely solid matte black, absolutely no reflections, no glare, no ambient light on screen surface")
 
-        # Lighting, angle, decor
-        for group in self._tag_groups[3:]:
+        # Lighting, angle
+        for group in (self._light_group, self._angle_group):
             sel = group.get_selection()
             if sel:
                 parts.append(self._TRANSLATIONS.get(sel, sel))
