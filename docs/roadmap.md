@@ -26,6 +26,7 @@
 
 ## 已关闭
 
+- 打包 app 自动角点识别失效修复（cv2 引导递归） ✅ `8b894c6` — 验证: 冻结 app 内 `RONGJING_DETECT_SELFTEST` 自测返回正确角点坐标（源码/打包结果一致 `[[0,250],[1075,406],[1069,991],[0,1115]]`），无 `detect_error.log`；根因是 `main.py` 的 `sys.path.insert(0,...)` 在冻结环境把 Frameworks 顶到首位遮蔽 cv2 二进制，详见 CLAUDE.md 踩坑 21
 - 第二期 P2（拼图+批次差异化+AI背景+背景图持久化） ✅ `e6416a8` — 验证: A/B/C/D/E 全部子阶段（拼图数据模型、差异化引擎、模板背景图持久化、拼图批处理线程、差异化 UI、主窗口集成、AI 背景 API+UI、文档更新、7 项手动端到端测试）均标记「已完成（2026-05-06）」，机械验收标准见原文快照 [详情 →](roadmap/p2-collage-diversify-ai-background-persistence.md)
 - 第三期 P3.A（屏幕区域自动检测） ✅ `528066a` — 验证: OpenCV 边缘检测方案落地，AI 生成纯黑屏幕 ≥95% 识别成功、实拍照片 ≥70% 可用，检测失败不影响手动标注 [详情 →](roadmap/p3a-auto-corner-detection.md)
 - V3.5（拼图模块四项改进：差异化对比滑动修复+PPT导入优化+设置页备份恢复+自动拆分布局分离） ✅ `a0e9ac6` — 验证: 4 个子项（P3.5-A/B/C/D）均标「已完成（2026-05-07）」，P3.5-D 按方案 B 简化交付 [详情 →](roadmap/v35-collage-four-improvements.md)
