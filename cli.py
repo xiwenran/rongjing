@@ -594,6 +594,68 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
               f"放大倍数={quality['upscale_factor']}，屏幕宽度={quality['screen_width']}px")
 
 
+def bg_prompt_cmd(
+    target: str,
+    device: str,
+    scene: str,
+    greenscreen: bool,
+    decor: str,
+    light: str,
+    angle: str,
+    extra: str,
+    json_result: bool,
+):
+    """拼装 AI 背景生成 prompt，与 GUI（AIGenerateTab._build_prompt 委托调用）共用同一份规则。"""
+    from core.bg_prompt import build_prompt
+
+    prompt = build_prompt(
+        target, device, scene, greenscreen,
+        decor=decor, light=light, angle=angle, extra=extra,
+    )
+    if json_result:
+        print(json.dumps({"prompt": prompt}, ensure_ascii=False))
+    else:
+        print(prompt)
+
+
+def dewatermark_cmd(input_path: str, output_path: str, strength: str, json_result: bool):
+    """对单张图片做去水印处理，纯函数调用 core.dewatermark.dewatermark_image，无需 GUI 显示环境。"""
+    from PIL import Image
+
+    from core.dewatermark import dewatermark_image, _format_for_suffix, _prepare_for_save, _save_kwargs
+
+    input_path = os.path.expanduser(input_path)
+    output_path = os.path.expanduser(output_path)
+
+    if not os.path.isfile(input_path):
+        print(f"[错误] 输入图片不存在：{input_path}", file=sys.stderr)
+        sys.exit(1)
+
+    ext = os.path.splitext(output_path)[1].lower()
+    save_format = _format_for_suffix(ext)
+    save_kwargs = _save_kwargs(save_format)
+
+    with Image.open(input_path) as img:
+        result = dewatermark_image(img, strength)
+    result = _prepare_for_save(result, save_format)
+
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    result.save(output_path, save_format, **save_kwargs)
+
+    payload = {
+        "input": input_path,
+        "output": output_path,
+        "strength": strength,
+        "metadata_stripped": True,
+    }
+    if json_result:
+        print(json.dumps(payload, ensure_ascii=False))
+    else:
+        print(f"已去水印：{output_path}（强度={strength}）")
+
+
 def main():
     parser = argparse.ArgumentParser(description="融景命令行工具")
     sub = parser.add_subparsers(dest="cmd")
@@ -630,6 +692,23 @@ def main():
     ct.add_argument("--min-screen-width", type=int, default=1600,
                      help="屏幕区域最小宽度（像素，默认 1600）；识别出的屏幕宽度低于此值时放大整张背景图（最多 3 倍）以降低 PPT 内容压缩比")
 
+    bp = sub.add_parser("bg-prompt", help="拼装 AI 背景生成 prompt（与 GUI 的 AIGenerateTab._build_prompt 共用同一份规则）")
+    bp.add_argument("--target", required=True, help="背景场景（如：教室场景/台式机电脑/笔记本室内/文档纸张/自定义场景）")
+    bp.add_argument("--device", default="", help="主体类型（如：希沃白板/台式显示器/笔记本电脑...）")
+    bp.add_argument("--scene", default="", help="环境位置（如：小学教室/教师办公桌...）")
+    bp.add_argument("--greenscreen", action="store_true", help="屏幕显示绿幕（默认关闭；文档纸张场景下会被自动忽略）")
+    bp.add_argument("--decor", default="", help="教室元素或桌面摆件（如：学生背影/有植物...）")
+    bp.add_argument("--light", default="", help="灯光（如：自然光/暖色灯光...）")
+    bp.add_argument("--angle", default="", help="拍摄角度（如：正面平视/略偏侧角...）")
+    bp.add_argument("--extra", default="", help="额外描述（可选）")
+    bp.add_argument("--json-result", action="store_true", help="以 JSON 格式输出结果到 stdout")
+
+    dw = sub.add_parser("dewatermark", help="对单张图片做去水印处理（core.dewatermark.dewatermark_image，无需 GUI 显示环境）")
+    dw.add_argument("--input", required=True, help="输入图片路径")
+    dw.add_argument("--output", required=True, help="输出图片路径")
+    dw.add_argument("--strength", required=True, choices=["low", "medium", "high"], help="去水印强度")
+    dw.add_argument("--json-result", action="store_true", help="以 JSON 格式输出结果到 stdout")
+
     args = parser.parse_args()
 
     if args.cmd == "list-templates":
@@ -644,6 +723,11 @@ def main():
         create_template(args.bg, args.name, args.category, args.preview_out,
                          args.json_result, args.force, use_vlm=not args.no_vlm,
                          min_screen_width=args.min_screen_width)
+    elif args.cmd == "bg-prompt":
+        bg_prompt_cmd(args.target, args.device, args.scene, args.greenscreen,
+                      args.decor, args.light, args.angle, args.extra, args.json_result)
+    elif args.cmd == "dewatermark":
+        dewatermark_cmd(args.input, args.output, args.strength, args.json_result)
     else:
         parser.print_help()
 
