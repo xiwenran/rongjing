@@ -246,8 +246,8 @@ def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: 
 
         for i, img_path in enumerate(images, 1):
             ppt_img = Image.open(img_path)
-            if fit == "contain":
-                ppt_img = fit_source_to_quad(ppt_img, tpl["screen_points"], mode="contain")
+            if fit in ("contain", "cover"):
+                ppt_img = fit_source_to_quad(ppt_img, tpl["screen_points"], mode=fit)
             if is_document:
                 result = embed_document_paper_pil(
                     ppt_img,
@@ -495,7 +495,10 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
 
     detect_method = None
     if detect_mode == "paper":
-        points = detect_paper_points(bg, inset_ratio=inset_ratio)
+        # 内缩延后到入库前做：质量指标（尤其 touches_edge 触边一票否决）必须
+        # 基于内缩前的原始识别角点计算，否则「纸张出画」会被内缩掩盖成永远
+        # 不触边（2026-07-25 冷眼审查 🔴2）。
+        points = detect_paper_points(bg, inset_ratio=0.0)
         detect_method = "paper"
     else:
         points = detect_green_screen_points(bg)
@@ -557,10 +560,18 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
     # 屏幕透视合成路径。此前这里硬编码 "screen"，--detect paper 建出的模板实际上
     # 永远拿不到 document_paper 渲染路径。
     template_type = "document_paper" if category == "文档纸张" else "screen"
+
+    # paper 通道：质量指标用上方的原始角点 points 计算；入库与预览用内缩后的
+    # stored_points（内容不压纸张物理边缘）。screen 通道两者相同。
+    stored_points = points
+    if detect_mode == "paper" and inset_ratio > 0:
+        from core.screen_detector import _inset_quad_toward_center
+        stored_points = _inset_quad_toward_center(points, inset_ratio)
+
     tpl = Template(
         name=final_name,
         background_path=bg,
-        screen_points=points,
+        screen_points=stored_points,
         category=category,
         template_type=template_type,
     )
@@ -583,7 +594,7 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
         preview_out = os.path.expanduser(preview_out)
     else:
         preview_out = os.path.join(os.path.dirname(bg) or ".", f"{final_name}_preview.jpg")
-    _draw_quad_preview(persisted_bg_path, points, preview_out)
+    _draw_quad_preview(persisted_bg_path, stored_points, preview_out)
 
     result = {
         "name": final_name,
@@ -592,7 +603,7 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
         "template_path": template_path,
         "background_path": persisted_bg_path,
         "preview_path": preview_out,
-        "screen_points": points,
+        "screen_points": stored_points,
         "quality": quality,
     }
 
