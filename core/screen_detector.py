@@ -777,6 +777,263 @@ def _line_intersection(l1, l2) -> Optional[Tuple[float, float]]:
 
 
 # ---------------------------------------------------------------------------
+# 纸张四角识别：亮色空白纸张放在深/中色桌面上的实拍照片（文档纸张模板场景）
+# ---------------------------------------------------------------------------
+
+_PAPER_MIN_AREA_RATIO = 0.15
+_PAPER_MAX_AREA_RATIO = 0.85
+_PAPER_OPEN_RATIOS = (0.01, 0.02, 0.035, 0.05, 0.07, 0.10, 0.15)
+_PAPER_APPROX_EPS = (0.01, 0.02, 0.03, 0.04, 0.06, 0.08)
+_PAPER_MIN_RECT_FILL = 0.75
+
+
+def detect_paper_points(image, inset_ratio: float = 0.03) -> Optional[PointList]:
+    """在「亮色空白纸张放在深/中色桌面」的实拍照片上识别纸张四角。
+
+    与 detect_screen_points（针对屏幕设备，暗色边框/内部有强纹理）思路不同，纸张
+    场景是「亮区分割」：纸张整体明显亮于周围桌面。但实测发现单一灰度阈值不够
+    稳——浅色木桌在灰度图上可能跟白纸一样亮，纯亮度分割会把桌面也圈进来；于是
+    改用 HSV「去饱和度亮度」（V-S，纸张接近纯白=低饱和高亮度，木桌/桌面通常
+    饱和度更高）作为主分割通道，Otsu 阈值 + 灰度自适应阈值兜底，在多档形态学
+    开运算核尺寸下各生成一批候选四边形（同一套「候选池 + 统一打分」架构见
+    detect_screen_points 顶部注释），再用「边界梯度贴合度 × 内部亮度均匀度 ×
+    四边内侧窄带均匀度」打分选出最佳候选——内部/内侧窄带均匀度是纸张专属信号：
+    真纸面内部和紧贴四边内侧几乎是纯色，候选四边形一旦把桌面/其他物体圈了进来，
+    这两个均匀度会明显下降，从而压制误检。
+
+    识别到的四角再朝四边形质心方向按 inset_ratio 内缩，避免合成内容压在纸张
+    物理边缘（纸边容易有阴影、轻微卷边，内容贴边会显得穿帮）。
+
+    竖版拍摄是本函数的主场景，不套用 detect_screen_points 面向横屏设备的宽高比
+    过滤（_ASPECT_MIN/_ASPECT_MAX）；只用面积占比 [0.15, 0.85] 过滤噪声轮廓。
+    识别失败（无 cv2、图片加载失败、找不到合规候选）一律返回 None，不抛异常。
+
+    已知局限：当纸张与背景（如白墙/浅色窗台）在亮度和饱和度上都非常接近、且
+    过渡区域没有明显阴影/纹理断层时，分割候选可能包含少量背景，角点定位会有
+    偏差（仍会返回一个合规四边形，不会误判为识别失败）；建议调用方在 preview
+    图上做一次人工确认。
+    """
+    cv2 = _import_cv2()
+    if cv2 is None:
+        return None
+    rgb = _load_rgb_array(image)
+    if rgb is None:
+        return None
+
+    try:
+        h, w = rgb.shape[:2]
+        gray_full = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
+        scale = min(1.0, _WORK_MAX_DIM / float(max(w, h)))
+        if scale < 1.0:
+            small_rgb = cv2.resize(rgb, (int(round(w * scale)), int(round(h * scale))),
+                                    interpolation=cv2.INTER_AREA)
+        else:
+            small_rgb = rgb
+        small_gray = cv2.cvtColor(small_rgb, cv2.COLOR_RGB2GRAY)
+        sh, sw = small_gray.shape[:2]
+
+        candidates = _gather_paper_candidates(cv2, small_rgb, small_gray)
+        if not candidates:
+            return None
+
+        gx = cv2.Sobel(small_gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(small_gray, cv2.CV_32F, 0, 1, ksize=3)
+        mag = cv2.magnitude(gx, gy)
+        global_mean_mag = float(np.mean(mag)) + 1e-6
+
+        best_quad = None
+        best_score = -1.0
+        for quad in candidates:
+            score = _score_paper_quad(cv2, gx, gy, mag, global_mean_mag, small_gray, quad, sw, sh)
+            if score > best_score:
+                best_score = score
+                best_quad = quad
+
+        if best_quad is None or best_score <= 0:
+            return None
+
+        inv = 1.0 / scale if scale > 0 else 1.0
+        quad_full = _clamp_points([[x * inv, y * inv] for x, y in best_quad], w, h)
+        quad_full = _inset_quad_toward_center(quad_full, inset_ratio)
+        return _clamp_points(quad_full, w, h)
+    except Exception:
+        _log_detect_error("detect_paper")
+        return None
+
+
+def _gather_paper_candidates(cv2, small_rgb: np.ndarray, small_gray: np.ndarray) -> List[PointList]:
+    """生成纸张候选四边形：HSV「去饱和度亮度」Otsu 分割为主，灰度自适应阈值兜底，
+    多档开运算核尺寸各出一批候选（核越大越能断开纸张与背景之间的弱连接）。"""
+    h, w = small_gray.shape[:2]
+    image_area = float(w * h)
+    out: List[PointList] = []
+
+    hsv = cv2.cvtColor(small_rgb, cv2.COLOR_RGB2HSV)
+    s_ch = hsv[:, :, 1].astype(np.int16)
+    v_ch = hsv[:, :, 2].astype(np.int16)
+    whiteness = np.clip(v_ch - s_ch, 0, 255).astype(np.uint8)
+    whiteness = cv2.GaussianBlur(whiteness, (5, 5), 0)
+    _, whiteness_mask = cv2.threshold(whiteness, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    blurred_gray = cv2.GaussianBlur(small_gray, (5, 5), 0)
+    adaptive_mask = cv2.adaptiveThreshold(
+        blurred_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 51, -10
+    )
+
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+    open_sizes = []
+    for ratio in _PAPER_OPEN_RATIOS:
+        size = max(5, int(round(min(w, h) * ratio)))
+        if size % 2 == 0:
+            size += 1
+        open_sizes.append(size)
+
+    for base_mask in (whiteness_mask, adaptive_mask):
+        base_mask = cv2.morphologyEx(base_mask, cv2.MORPH_CLOSE, close_kernel)
+        for open_size in open_sizes:
+            open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (open_size, open_size))
+            mask = cv2.morphologyEx(base_mask, cv2.MORPH_OPEN, open_kernel)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area < image_area * _PAPER_MIN_AREA_RATIO or area > image_area * _PAPER_MAX_AREA_RATIO:
+                    continue
+                out.extend(_paper_quads_from_contour(cv2, contour))
+
+    return out
+
+
+def _paper_quads_from_contour(cv2, contour) -> List[PointList]:
+    results: List[PointList] = []
+    perimeter = cv2.arcLength(contour, True)
+    if perimeter <= 0:
+        return results
+
+    for eps_factor in _PAPER_APPROX_EPS:
+        approx = cv2.approxPolyDP(contour, eps_factor * perimeter, True)
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            results.append(_order_points(approx.reshape(4, 2).astype(np.float32)))
+
+    rect = cv2.minAreaRect(contour)
+    box = cv2.boxPoints(rect).astype(np.float32)
+    box_area = cv2.contourArea(box)
+    contour_area = cv2.contourArea(contour)
+    if box_area > 0 and contour_area / box_area >= _PAPER_MIN_RECT_FILL:
+        results.append(_order_points(box))
+
+    return results
+
+
+def _score_paper_quad(cv2, gx: np.ndarray, gy: np.ndarray, mag_map: np.ndarray, global_mean_mag: float,
+                       gray: np.ndarray, quad: PointList, w: int, h: int) -> float:
+    """纸张候选打分 = 边界梯度贴合度 × 内部亮度均匀度 × 四边内侧窄带均匀度。
+
+    与 _score_quad（屏幕打分）的关键差异：屏幕内部允许有内容（图文/黑屏），只
+    惩罚「纹理过多」；纸张假定为空白，内部和紧贴四边内侧的窄带都应该是均匀纯色，
+    候选一旦把背景圈了进来，这两处的标准差会明显升高，直接压低分数。
+    """
+    pts = [np.array(p, dtype=np.float64) for p in quad]
+    edges = [(pts[i], pts[(i + 1) % 4]) for i in range(4)]
+
+    sample_xs, sample_ys, normals = [], [], []
+    n_per_edge = 24
+    for a, b in edges:
+        d = b - a
+        length = np.linalg.norm(d)
+        if length < 1e-6:
+            return -1.0
+        d = d / length
+        normal = np.array([-d[1], d[0]])
+        for i in range(n_per_edge):
+            t = 0.12 + 0.76 * (i / (n_per_edge - 1))
+            p = a + t * (b - a)
+            sample_xs.append(p[0])
+            sample_ys.append(p[1])
+            normals.append(normal)
+
+    xs = np.array(sample_xs, dtype=np.float32).reshape(-1, 1)
+    ys = np.array(sample_ys, dtype=np.float32).reshape(-1, 1)
+    valid = (xs[:, 0] >= 0) & (xs[:, 0] <= w - 1) & (ys[:, 0] >= 0) & (ys[:, 0] <= h - 1)
+    if not np.any(valid):
+        return -1.0
+
+    gx_s = cv2.remap(gx, xs, ys, interpolation=cv2.INTER_LINEAR).reshape(-1)
+    gy_s = cv2.remap(gy, xs, ys, interpolation=cv2.INTER_LINEAR).reshape(-1)
+    mag = np.sqrt(gx_s ** 2 + gy_s ** 2)
+
+    normals_arr = np.array(normals)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cos_align = np.abs(gx_s * normals_arr[:, 0] + gy_s * normals_arr[:, 1]) / np.maximum(mag, 1e-6)
+    cos_align = np.nan_to_num(cos_align)
+
+    raw = mag * cos_align
+    score_samples = raw[valid]
+    if score_samples.size == 0:
+        return -1.0
+    boundary_score = float(np.mean(score_samples))
+
+    interior_std = _interior_intensity_std(cv2, gray, quad, w, h)
+    interior_uniformity = 1.0 / (1.0 + (interior_std / 10.0) ** 2)
+
+    band_std = _paper_edge_band_std(gray, quad, w, h, band_px=max(6, int(round(0.02 * min(w, h)))))
+    band_uniformity = 1.0 / (1.0 + (band_std / 10.0) ** 2)
+
+    return boundary_score * interior_uniformity * band_uniformity
+
+
+def _paper_edge_band_std(gray: np.ndarray, quad: PointList, w: int, h: int, band_px: int) -> float:
+    """沿四边形每条边的内侧取一条窄带采样灰度，返回四条边窄带标准差的均值。
+
+    真纸边内侧应始终是均匀纸面（低标准差）；候选四边形若有一条边切过了背景
+    物体（桌面纹理、其他物件），那条边内侧窄带会混入差异很大的像素，标准差
+    明显升高，从而在 _score_paper_quad 中拖累整体打分。
+    """
+    pts = np.array(quad, dtype=np.float64)
+    center = pts.mean(axis=0)
+    stds = []
+    n_per_edge = 40
+    offsets = np.linspace(2, band_px, 5)
+
+    for i in range(4):
+        a = pts[i]
+        b = pts[(i + 1) % 4]
+        d = b - a
+        length = np.linalg.norm(d)
+        if length < 1e-6:
+            continue
+        d_unit = d / length
+        normal = np.array([-d_unit[1], d_unit[0]])
+        mid = (a + b) / 2.0
+        if np.dot(center - mid, normal) < 0:
+            normal = -normal
+
+        samples = []
+        for t in np.linspace(0.1, 0.9, n_per_edge):
+            p = a + t * (b - a)
+            for off in offsets:
+                q = p + normal * off
+                x, y = int(round(q[0])), int(round(q[1]))
+                if 0 <= x < w and 0 <= y < h:
+                    samples.append(gray[y, x])
+        if len(samples) > 5:
+            stds.append(float(np.std(samples)))
+
+    if not stds:
+        return 999.0
+    return float(np.mean(stds))
+
+
+def _inset_quad_toward_center(quad: PointList, inset_ratio: float) -> PointList:
+    """把四边形四个角点朝质心方向按 inset_ratio 内缩（0.03 = 缩 3%）。"""
+    pts = np.array(quad, dtype=np.float64)
+    center = pts.mean(axis=0)
+    ratio = max(0.0, min(0.49, float(inset_ratio)))
+    shrunk = center + (pts - center) * (1.0 - ratio)
+    return [[float(x), float(y)] for x, y in shrunk]
+
+
+# ---------------------------------------------------------------------------
 # 通用几何工具
 # ---------------------------------------------------------------------------
 

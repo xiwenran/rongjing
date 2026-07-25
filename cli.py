@@ -196,7 +196,7 @@ def _place_covers(output_root: str, cover_source: str):
 
 
 def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: str,
-            cover_source: str | None = None):
+            cover_source: str | None = None, fit: str = "stretch"):
     # 延迟导入，避免系统没装 Pillow 时 list-templates 也报错
     sys.path.insert(0, os.path.dirname(__file__))
     from PIL import Image
@@ -204,6 +204,7 @@ def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: 
         embed_document_paper_pil,
         embed_image_pil_fast,
         precompute_template_cache,
+        fit_source_to_quad,
     )
 
     output_dir = os.path.expanduser(output_dir)
@@ -245,6 +246,8 @@ def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: 
 
         for i, img_path in enumerate(images, 1):
             ppt_img = Image.open(img_path)
+            if fit == "contain":
+                ppt_img = fit_source_to_quad(ppt_img, tpl["screen_points"], mode="contain")
             if is_document:
                 result = embed_document_paper_pil(
                     ppt_img,
@@ -468,7 +471,8 @@ def _draw_quad_preview(bg_path: str, points: list, out_path: str) -> None:
 
 def create_template(bg: str, name: str | None, category: str, preview_out: str | None,
                      json_result: bool, force: bool, use_vlm: bool = True,
-                     min_screen_width: int = 1600):
+                     min_screen_width: int = 1600, detect_mode: str = "screen",
+                     inset_ratio: float = 0.03):
     sys.path.insert(0, os.path.dirname(__file__))
     import math
     import tempfile
@@ -477,6 +481,7 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
         detect_screen_points,
         detect_screen_points_vlm,
         detect_green_screen_points,
+        detect_paper_points,
     )
     from models.template_model import Template, TemplateManager
 
@@ -489,15 +494,19 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
     manager = TemplateManager(TEMPLATES_DIR)
 
     detect_method = None
-    points = detect_green_screen_points(bg)
-    if points:
-        detect_method = "greenscreen"
-    elif use_vlm:
-        points = detect_screen_points_vlm(bg)
-        detect_method = "vlm_fusion"
+    if detect_mode == "paper":
+        points = detect_paper_points(bg, inset_ratio=inset_ratio)
+        detect_method = "paper"
     else:
-        points = detect_screen_points(bg)
-        detect_method = "classic"
+        points = detect_green_screen_points(bg)
+        if points:
+            detect_method = "greenscreen"
+        elif use_vlm:
+            points = detect_screen_points_vlm(bg)
+            detect_method = "vlm_fusion"
+        else:
+            points = detect_screen_points(bg)
+            detect_method = "classic"
     if not points:
         print(f"[错误] 未能从背景图中识别出屏幕四角，请检查图片内容或改用 GUI 手工标注：{bg}", file=sys.stderr)
         sys.exit(1)
@@ -542,12 +551,18 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
     with Image.open(bg) as im:
         bg_w, bg_h = im.size
 
+    # 与 Template.from_dict 的默认类型推断规则保持一致（该规则原本只在“JSON 里缺
+    # template_type 字段”时生效）：分类为「文档纸张」应产出 document_paper 类模板，
+    # 才能被 process() 路由到 embed_document_paper_pil 的纸张光影合成路径，而不是
+    # 屏幕透视合成路径。此前这里硬编码 "screen"，--detect paper 建出的模板实际上
+    # 永远拿不到 document_paper 渲染路径。
+    template_type = "document_paper" if category == "文档纸张" else "screen"
     tpl = Template(
         name=final_name,
         background_path=bg,
         screen_points=points,
         category=category,
-        template_type="screen",
+        template_type=template_type,
     )
     storage_key = manager.save(tpl, storage_key=storage_key_hint)
 
@@ -669,6 +684,10 @@ def main():
     p.add_argument("--format", default="JPEG", choices=["PNG", "JPEG"], help="输出格式（默认 JPEG）")
     p.add_argument("--cover-source", default=None,
                    help="封面源目录：单一目录（含 0(1).jpg/0(2).jpg/0(3).jpg）或多主题父目录（按名称前 6 字符匹配）")
+    p.add_argument("--fit", default="stretch", choices=["stretch", "contain"],
+                   help="源图与模板承载区宽高比不一致时的适配方式（默认 stretch）："
+                        "stretch 保持现有行为，直接拉伸铺满；contain 先等比缩放并补白"
+                        "（letterbox）到承载区等效宽高比，再走透视合成，避免内容变形")
 
     c = sub.add_parser("collage", help="将一批图片拼接成单张拼图")
     c.add_argument("--input-dir", required=True, help="输入图片目录")
@@ -691,6 +710,13 @@ def main():
                      help="禁用 VLM 粗定位融合，只用纯经典算法识别（默认走 VLM 融合，VLM 不可用时自动降级为纯经典）")
     ct.add_argument("--min-screen-width", type=int, default=1600,
                      help="屏幕区域最小宽度（像素，默认 1600）；识别出的屏幕宽度低于此值时放大整张背景图（最多 3 倍）以降低 PPT 内容压缩比")
+    ct.add_argument("--detect", default="screen", choices=["screen", "paper"],
+                     help="识别方式（默认 screen）：screen 走既有绿幕/VLM/经典三级识别路径；"
+                          "paper 走亮区分割识别纸张四角（适用于文档纸张模板的实拍背景），"
+                          "识别到的四角会朝质心方向内缩（见 --inset-ratio）")
+    ct.add_argument("--inset-ratio", type=float, default=0.03,
+                     help="仅 --detect paper 生效：识别到的纸张四角朝质心方向内缩的比例（默认 0.03，即内缩 3%%），"
+                          "避免合成内容压在纸张物理边缘")
 
     bp = sub.add_parser("bg-prompt", help="拼装 AI 背景生成 prompt（与 GUI 的 AIGenerateTab._build_prompt 共用同一份规则）")
     bp.add_argument("--target", required=True, help="背景场景（如：教室场景/台式机电脑/笔记本室内/文档纸张/自定义场景）")
@@ -715,14 +741,15 @@ def main():
         list_templates()
     elif args.cmd == "process":
         process(args.input, args.templates, args.output, args.format,
-                cover_source=args.cover_source)
+                cover_source=args.cover_source, fit=args.fit)
     elif args.cmd == "collage":
         collage(args.input_dir, args.output, args.template, args.rows, args.cols,
                 args.pages, json_result=args.json_result)
     elif args.cmd == "create-template":
         create_template(args.bg, args.name, args.category, args.preview_out,
                          args.json_result, args.force, use_vlm=not args.no_vlm,
-                         min_screen_width=args.min_screen_width)
+                         min_screen_width=args.min_screen_width, detect_mode=args.detect,
+                         inset_ratio=args.inset_ratio)
     elif args.cmd == "bg-prompt":
         bg_prompt_cmd(args.target, args.device, args.scene, args.greenscreen,
                       args.decor, args.light, args.angle, args.extra, args.json_result)

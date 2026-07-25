@@ -309,6 +309,81 @@ def _suppress_document_edge_lines(
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
 
 
+def _quad_aspect_ratio(points: List[List[float]]) -> float:
+    """候选四边形的等效宽高比：上下两条边长度均值 / 左右两条边长度均值。"""
+    tl, tr, br, bl = order_points(points).astype(np.float64)
+    top = np.linalg.norm(tr - tl)
+    bottom = np.linalg.norm(br - bl)
+    left = np.linalg.norm(bl - tl)
+    right = np.linalg.norm(br - tr)
+    avg_w = (top + bottom) / 2.0
+    avg_h = (left + right) / 2.0
+    return float(avg_w / max(avg_h, 1e-6))
+
+
+def _edge_median_color(img: Image.Image) -> tuple:
+    """取图片四条边缘像素的中位数颜色，作为等比适配补白色（贴近源图纸面/背景色，
+    比固定纯白更不容易在合成后露出突兀的白边）。"""
+    arr = np.array(img.convert("RGB"))
+    h, w = arr.shape[:2]
+    border = np.concatenate([
+        arr[0, :, :], arr[-1, :, :], arr[:, 0, :], arr[:, -1, :],
+    ], axis=0)
+    med = np.median(border, axis=0)
+    return tuple(int(round(v)) for v in med)
+
+
+def fit_source_to_quad(
+    img: Image.Image,
+    points: List[List[float]],
+    mode: str = "stretch",
+    fill_color: Optional[tuple] = None,
+) -> Image.Image:
+    """按目标四边形的等效宽高比，对源图做等比适配预处理。
+
+    mode="stretch"（默认）：原样返回 img，后续透视变换会把 img 的四角直接映射到
+    目标四边形四角，源图与目标宽高比不一致时内容会被拉伸——这是合成器一直以来的
+    行为，零变化。
+
+    mode="contain"：先按目标四边形的等效宽高比（上下边均值 / 左右边均值，见
+    _quad_aspect_ratio）对源图做 letterbox——等比缩放后居中，用 fill_color 补白
+    两侧留白，让补白后画布的宽高比恰好等于目标四边形——避免源图内容在透视映射
+    时被非均匀拉伸变形。补白色默认取源图四条边缘像素的中位数（贴近源图纸面/
+    背景色，通常比固定纯白更不突兀）；调用方可传 fill_color 覆盖（如 (250, 250,
+    250) 对应纯白 #FAFAFA）。
+    """
+    if mode != "contain":
+        return img
+
+    img = img.convert("RGB")
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        return img
+    src_aspect = w / float(h)
+    target_aspect = _quad_aspect_ratio(points)
+
+    if abs(src_aspect - target_aspect) < 1e-3:
+        return img
+
+    if fill_color is None:
+        fill_color = _edge_median_color(img)
+
+    if src_aspect > target_aspect:
+        # 源图比目标更「宽」：以源图宽度为基准，画布拉高，上下补白
+        canvas_w = w
+        canvas_h = max(1, round(w / target_aspect))
+    else:
+        # 源图比目标更「窄/高」：以源图高度为基准，画布拉宽，左右补白
+        canvas_h = h
+        canvas_w = max(1, round(h * target_aspect))
+
+    canvas = Image.new("RGB", (canvas_w, canvas_h), fill_color)
+    off_x = (canvas_w - w) // 2
+    off_y = (canvas_h - h) // 2
+    canvas.paste(img, (off_x, off_y))
+    return canvas
+
+
 def embed_image(
     ppt_path: str,
     bg_path: str,
