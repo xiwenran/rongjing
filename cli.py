@@ -23,7 +23,11 @@ TEMPLATES_DIR = os.path.expanduser("~/Library/Application Support/融景/templat
 COLLAGES_DIR = os.path.expanduser("~/Library/Application Support/融景/collages")
 
 sys.path.insert(0, os.path.dirname(__file__))
-from models.template_model import normalize_render_preset, normalize_template_category
+from models.template_model import (
+    default_template_type,
+    normalize_render_preset,
+    normalize_template_category,
+)
 
 
 def natural_sort_key(s: str):
@@ -485,6 +489,17 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
     )
     from models.template_model import Template, TemplateManager
 
+    # --inset-ratio 越界（<0 或 >=0.5）此前被 core.screen_detector 的
+    # _inset_quad_toward_center 静默钳制到 [0, 0.49]，用户传错值（如误把 5%
+    # 打成 0.5）拿到的模板承载区被悄悄砍掉一半却毫无提示。这里在真正开始识别前
+    # 显式校验、直接报错退出，不做默认值兜底（2026-07-25 冷眼审查 🟡7）。
+    if not (0.0 <= inset_ratio < 0.5):
+        print(
+            f"[错误] --inset-ratio 取值非法：{inset_ratio}，合法区间 [0, 0.49]",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     bg = os.path.expanduser(bg)
     if not os.path.isfile(bg):
         print(f"[错误] 背景图不存在：{bg}", file=sys.stderr)
@@ -516,7 +531,18 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
 
     # 屏幕区域宽度（TL-TR 距离）过窄时，放大整张背景图以降低 PPT 内容压缩比，避免嵌入后文字模糊
     naming_bg = bg  # 用于默认模板命名，放大后仍取原始文件名
-    screen_width = math.hypot(points[1][0] - points[0][0], points[1][1] - points[0][1])
+    edge_tl_tr = math.hypot(points[1][0] - points[0][0], points[1][1] - points[0][1])
+    if detect_mode == "paper":
+        # --detect paper 场景常是竖版实拍（纸张短边朝左右），TL→TR 天然是短边；
+        # 用面向横屏设备设计的 min_screen_width 阈值卡这条短边，会把每张竖版
+        # 纸张模板都判成「过窄」进而整图放大 2-3 倍（2026-07-25 冷眼审查 🟡9）。
+        # 改用四边形长边（TL→TR 与 TL→BL 中较大者）与 min_screen_width 比较，
+        # 竖版模板的长边通常已经足够大，不再被误判触发放大；screen 通道不受影响
+        # （下面 else 分支的 edge_tl_tr 逻辑原样保留，零变化）。
+        edge_tl_bl = math.hypot(points[3][0] - points[0][0], points[3][1] - points[0][1])
+        screen_width = max(edge_tl_tr, edge_tl_bl)
+    else:
+        screen_width = edge_tl_tr
     upscale_factor = 1.0
     if screen_width > 0 and screen_width < min_screen_width:
         upscale_factor = min(min_screen_width / screen_width, 3.0)
@@ -554,12 +580,16 @@ def create_template(bg: str, name: str | None, category: str, preview_out: str |
     with Image.open(bg) as im:
         bg_w, bg_h = im.size
 
-    # 与 Template.from_dict 的默认类型推断规则保持一致（该规则原本只在“JSON 里缺
+    # 与 Template.from_dict 的默认类型推断规则共用同一来源
+    # models.template_model.default_template_type（该规则原本只在“JSON 里缺
     # template_type 字段”时生效）：分类为「文档纸张」应产出 document_paper 类模板，
     # 才能被 process() 路由到 embed_document_paper_pil 的纸张光影合成路径，而不是
-    # 屏幕透视合成路径。此前这里硬编码 "screen"，--detect paper 建出的模板实际上
-    # 永远拿不到 document_paper 渲染路径。
-    template_type = "document_paper" if category == "文档纸张" else "screen"
+    # 屏幕透视合成路径。此前这里另写一份字面量比较 `category == "文档纸张"`——虽然
+    # 本函数顶部已把 category 归一化过，当下不会算错，但两处判据各自维护、只靠
+    # “归一化时机凑巧在比较之前”保持一致，属未来漂移风险，不是当前可复现 bug。
+    # 抽成共用函数消除风险；default_template_type 同样只认归一化后的「文档纸张」，
+    # 不擅自扩别名清单。
+    template_type = default_template_type(category)
 
     # paper 通道：质量指标用上方的原始角点 points 计算；入库与预览用内缩后的
     # stored_points（内容不压纸张物理边缘）。screen 通道两者相同。

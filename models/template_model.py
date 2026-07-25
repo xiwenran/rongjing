@@ -33,6 +33,19 @@ def normalize_render_preset(category: str | None, render_preset: str | None) -> 
     return render_preset or "clear"
 
 
+def default_template_type(category: str | None) -> str:
+    """template_type 缺省推断规则的唯一来源：分类（先走 normalize_template_category
+    别名归一化）为「文档纸张」时归为 document_paper，其余归为 screen。
+
+    `Template.from_dict` 与 `cli.py` 的 `create_template` 都必须调用这份规则，
+    不得各写一份字面量比较——cli.py 里此前另写了一份 `category == "文档纸张"`
+    的字面量判定（依赖调用点自己先把 category 归一化过），两处判据各自维护，
+    只要有一处漏掉归一化步骤或归一化时机被挪动，就会出现 template_type 与
+    render_preset 自相矛盾（render_preset="paper" 却判成 "screen"，被
+    process() 错误路由到屏幕透视合成路径）。抽成共用函数消除这个漂移风险。"""
+    return "document_paper" if normalize_template_category(category) == "文档纸张" else "screen"
+
+
 @dataclass
 class Template:
     name: str
@@ -61,7 +74,7 @@ class Template:
     @classmethod
     def from_dict(cls, d: dict) -> "Template":
         category = normalize_template_category(d.get("category", "教室场景"))
-        default_type = "document_paper" if category == "文档纸张" else "screen"
+        default_type = default_template_type(category)
         template_type = d.get("template_type", d.get("render_type", default_type))
         return cls(
             name=d["name"],

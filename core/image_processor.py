@@ -1,3 +1,4 @@
+import math
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -310,7 +311,13 @@ def _suppress_document_edge_lines(
 
 
 def _quad_aspect_ratio(points: List[List[float]]) -> float:
-    """候选四边形的等效宽高比：上下两条边长度均值 / 左右两条边长度均值。"""
+    """候选四边形的等效宽高比：上下两条边长度均值 / 左右两条边长度均值。
+
+    分母下限用 max(avg_h, 1.0)（与 core/screen_detector.py 同名函数一致，见该
+    文件 _quad_aspect_ratio），而非更早版本的 1e-6——1e-6 的下限会在退化四边形
+    （对边长度趋零）上把宽高比放大到 1e8 量级，间接导致下游 Image.new 画布
+    OverflowError；1.0 的下限把这种退化情况钳制在「宽高比 = 有效宽度」的合理
+    量级，不再引发溢出。"""
     tl, tr, br, bl = order_points(points).astype(np.float64)
     top = np.linalg.norm(tr - tl)
     bottom = np.linalg.norm(br - bl)
@@ -318,7 +325,7 @@ def _quad_aspect_ratio(points: List[List[float]]) -> float:
     right = np.linalg.norm(br - tr)
     avg_w = (top + bottom) / 2.0
     avg_h = (left + right) / 2.0
-    return float(avg_w / max(avg_h, 1e-6))
+    return float(avg_w / max(avg_h, 1.0))
 
 
 def _edge_median_color(img: Image.Image) -> tuple:
@@ -366,6 +373,13 @@ def fit_source_to_quad(
         return img
     src_aspect = w / float(h)
     target_aspect = _quad_aspect_ratio(points)
+
+    if not math.isfinite(target_aspect) or target_aspect <= 0:
+        # 退化四边形（四角重合、对边长度趋零等）算出的目标宽高比非有限或非正，
+        # 后续 contain/cover 分支都会拿它做除数或画布边长，硬算下去会
+        # ZeroDivisionError/OverflowError。合成侧宁可原样返回源图（退回
+        # stretch 路径），也不让批量任务在这一张上中途崩溃。
+        return img
 
     if abs(src_aspect - target_aspect) < 1e-3:
         return img
