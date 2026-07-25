@@ -684,10 +684,12 @@ def main():
     p.add_argument("--format", default="JPEG", choices=["PNG", "JPEG"], help="输出格式（默认 JPEG）")
     p.add_argument("--cover-source", default=None,
                    help="封面源目录：单一目录（含 0(1).jpg/0(2).jpg/0(3).jpg）或多主题父目录（按名称前 6 字符匹配）")
-    p.add_argument("--fit", default="stretch", choices=["stretch", "contain"],
+    p.add_argument("--fit", default="stretch", choices=["stretch", "contain", "cover"],
                    help="源图与模板承载区宽高比不一致时的适配方式（默认 stretch）："
                         "stretch 保持现有行为，直接拉伸铺满；contain 先等比缩放并补白"
-                        "（letterbox）到承载区等效宽高比，再走透视合成，避免内容变形")
+                        "（letterbox）到承载区等效宽高比，再走透视合成，避免内容变形；"
+                        "cover 等比铺满并居中裁掉溢出，内容满版直达纸边不留补白（封面/"
+                        "满版页推荐，密排正文页顶底会被裁）")
 
     c = sub.add_parser("collage", help="将一批图片拼接成单张拼图")
     c.add_argument("--input-dir", required=True, help="输入图片目录")

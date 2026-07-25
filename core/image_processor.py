@@ -351,8 +351,13 @@ def fit_source_to_quad(
     时被非均匀拉伸变形。补白色默认取源图四条边缘像素的中位数（贴近源图纸面/
     背景色，通常比固定纯白更不突兀）；调用方可传 fill_color 覆盖（如 (250, 250,
     250) 对应纯白 #FAFAFA）。
+
+    mode="cover"：等比缩放铺满目标宽高比后居中裁掉溢出——内容满版直达纸边，
+    比例不合的部分「延伸出纸面」被裁切，不留任何补白边（2026-07-25 用户看
+    contain 首版合成后裁决：参考笔记图都是内容铺满整张纸，留白边显假）。适合
+    封面/版式饱满的页面；正文密排页顶底可能被裁，须按页型选择。
     """
-    if mode != "contain":
+    if mode not in ("contain", "cover"):
         return img
 
     img = img.convert("RGB")
@@ -364,6 +369,18 @@ def fit_source_to_quad(
 
     if abs(src_aspect - target_aspect) < 1e-3:
         return img
+
+    if mode == "cover":
+        # 等比铺满：从源图中裁出目标比例的最大内接矩形（居中），溢出部分裁掉
+        if src_aspect > target_aspect:
+            crop_w = max(1, round(h * target_aspect))
+            crop_h = h
+        else:
+            crop_w = w
+            crop_h = max(1, round(w / target_aspect))
+        off_x = (w - crop_w) // 2
+        off_y = (h - crop_h) // 2
+        return img.crop((off_x, off_y, off_x + crop_w, off_y + crop_h))
 
     if fill_color is None:
         fill_color = _edge_median_color(img)
