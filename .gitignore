@@ -29,3 +29,8 @@ templates/*.json
 # Claude Code 本地状态（含 codex-rescue 子代理临时 worktree）
 .claude/
 .echo/
+
+# 临时调试输出
+.tmp/
+# skill 软链结构自环
+/rongjing
