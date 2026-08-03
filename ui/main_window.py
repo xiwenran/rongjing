@@ -605,6 +605,8 @@ class MainWindow(QMainWindow):
         self._last_dir_images  = self._settings.value("last_dir_images",   _home)
         self._last_dir_videos  = self._settings.value("last_dir_videos",   _home)
         self._batch_output_width = int(self._settings.value("batch_output_width", 1920))
+        self._realism_enabled = bool(self._settings.value("realism_enabled", True, type=bool))
+        self._realism_strength = int(self._settings.value("realism_strength", 70))
 
         self._build_ui()
         self._on_template_category_changed()
@@ -1040,6 +1042,26 @@ class MainWindow(QMainWindow):
         frw_layout.addWidget(self.resolution_combo)
         frw_layout.addStretch()
         fv.addWidget(self._format_row_widget)
+        fv.addSpacing(12)
+
+        self.realism_check = QCheckBox("实拍质感（模拟随手拍摄效果）")
+        self.realism_check.setChecked(self._realism_enabled)
+        self.realism_check.toggled.connect(self._save_realism_enabled)
+        fv.addWidget(self.realism_check)
+
+        self._realism_strength_widget = QWidget(); self._fix_bg(self._realism_strength_widget, _SIDE)
+        rsw_layout = QHBoxLayout(self._realism_strength_widget)
+        rsw_layout.setContentsMargins(0, 0, 0, 0); rsw_layout.setSpacing(8)
+        rsw_layout.addWidget(_lbl("强度:", "hint"))
+        self.realism_strength_spin = QSpinBox()
+        self.realism_strength_spin.setRange(0, 100)
+        self.realism_strength_spin.setValue(self._realism_strength)
+        self.realism_strength_spin.setFixedWidth(72)
+        self.realism_strength_spin.valueChanged.connect(self._save_realism_strength)
+        rsw_layout.addWidget(self.realism_strength_spin)
+        rsw_layout.addStretch()
+        fv.addWidget(self._realism_strength_widget)
+
         fv.addSpacing(16); fv.addWidget(_sep()); fv.addSpacing(14)
         from ui.diversify_widget import DiversifyWidget
         self._batch_diversify = DiversifyWidget()
@@ -1766,6 +1788,14 @@ class MainWindow(QMainWindow):
         )
         self._settings.setValue("batch_output_width", self._batch_output_width)
 
+    def _save_realism_enabled(self, checked: bool):
+        self._realism_enabled = checked
+        self._settings.setValue("realism_enabled", checked)
+
+    def _save_realism_strength(self, value: int):
+        self._realism_strength = value
+        self._settings.setValue("realism_strength", value)
+
     # ── Batch actions ─────────────────────────────────────────────────────────
 
     def _browse_input(self):
@@ -2066,6 +2096,8 @@ class MainWindow(QMainWindow):
             self.format_combo.currentText(),
             output_width=self._batch_output_width,
             diversify_config=self._batch_diversify.get_config(),
+            realism_enabled=self._realism_enabled,
+            realism_strength=self._realism_strength,
         )
         self._batch_runner.progress.connect(self._on_progress)
         self._batch_runner.finished.connect(self._on_finished)
@@ -2089,7 +2121,11 @@ class MainWindow(QMainWindow):
             if any((getattr(t, "template_type", "screen") or "screen") != "screen" for t in templates):
                 QMessageBox.warning(self, "提示", "视频模式只支持屏幕类模板，请重新选择模板"); return
             tasks.append((video_path, templates))
-        self._batch_runner = VideoRunner(tasks, output_dir)
+        self._batch_runner = VideoRunner(
+            tasks, output_dir,
+            realism_enabled=self._realism_enabled,
+            realism_strength=self._realism_strength,
+        )
         self._batch_runner.progress.connect(self._on_progress)
         self._batch_runner.finished.connect(self._on_finished)
         self.btn_run.setVisible(False); self.btn_abort.setVisible(True)

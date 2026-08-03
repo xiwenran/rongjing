@@ -109,10 +109,17 @@ def build_prompt(
     is_classroom = device in ("希沃白板", "教室大屏", "多媒体大屏") or scene in _CLASSROOM_SCENES
     use_greenscreen = (not is_document) and greenscreen
 
+    # 实拍观感基调：让 AI 直接把「老旧 iPhone 随手拍」的质感画进背景图，
+    # 而不是事后靠合成滤镜去模拟。AI 画出来的暗部、噪点、光照是真实自洽的，
+    # 程序化叠加的脏污/颗粒始终难控制（实测容易糊成一片灰）。
+    # 措辞一律正向：写「清晰锐利」而不是「不模糊」——被否定的概念会被带进
+    # 注意力，禁得越具体越容易被复现。
     parts = [
-        "A candid realistic close-up photograph shot on a smartphone camera",
-        "authentic everyday scene with natural imperfections",
-        "subtle depth of field, natural lighting variations, slight film grain",
+        "A candid realistic close-up photograph, a casual everyday snapshot taken on an older iPhone",
+        "handheld with a slight natural tilt, while the subject itself stays sharp and in focus",
+        "ordinary indoor room lighting, slightly underexposed so the overall image reads a little dark",
+        "visible sensor noise and fine grain throughout, authentic everyday scene with natural imperfections",
+        "subtle depth of field, natural lighting variations",
     ]
 
     if is_document:
@@ -163,6 +170,10 @@ def build_prompt(
     elif use_greenscreen:
         parts.append("the screen displays a solid pure chroma-key green color similar to #00FF00, perfectly flat and uniform across the entire screen surface")
         parts.append("no gradient, no reflection, no glare, no glossy highlight, no bezel glow on the green screen area")
+        # 实拍基调里的「整体偏暗」会波及绿幕本身，而绿幕靠颜色分割出角点建模板，
+        # 变暗会拉低 G 与 R/B 的比值、削弱检测。这里把绿幕区豁免出来：环境可以暗，
+        # 绿幕必须保持明亮饱和。
+        parts.append("the green screen area itself remains bright and fully saturated pure green, keeping its vivid color even though the surrounding room is dimly lit")
         if is_classroom:
             parts.append("the classroom blackboard is a distinctly dark forest-green tone, clearly different from the bright pure green screen color, the two greens must not be confused")
     else:

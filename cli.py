@@ -200,7 +200,8 @@ def _place_covers(output_root: str, cover_source: str):
 
 
 def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: str,
-            cover_source: str | None = None, fit: str = "stretch"):
+            cover_source: str | None = None, fit: str = "stretch",
+            realism_enabled: bool = True, realism_strength: int = 70):
     # 延迟导入，避免系统没装 Pillow 时 list-templates 也报错
     sys.path.insert(0, os.path.dirname(__file__))
     from PIL import Image
@@ -210,6 +211,7 @@ def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: 
         precompute_template_cache,
         fit_source_to_quad,
     )
+    from core.realism_filter import apply_realism, precompute_realism
 
     output_dir = os.path.expanduser(output_dir)
     os.makedirs(output_dir, exist_ok=True)
@@ -244,6 +246,8 @@ def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: 
         bg_img = Image.open(bg_path)
         is_document = tpl.get("template_type") == "document_paper"
         cache = None if is_document else precompute_template_cache(bg_img, tpl["screen_points"])
+        realism_strength_effective = realism_strength if realism_enabled else 0
+        realism_cache = precompute_realism(bg_img, tpl["screen_points"], strength=realism_strength_effective)
 
         out_sub = os.path.join(output_dir, tpl_key)
         os.makedirs(out_sub, exist_ok=True)
@@ -261,6 +265,8 @@ def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: 
                 )
             else:
                 result = embed_image_pil_fast(ppt_img, cache)
+
+            result = apply_realism(result, realism_cache)
 
             out_path = os.path.join(out_sub, f"{i}{ext}")
             result.save(out_path, **save_kwargs)
@@ -731,6 +737,10 @@ def main():
                         "（letterbox）到承载区等效宽高比，再走透视合成，避免内容变形；"
                         "cover 等比铺满并居中裁掉溢出，内容满版直达纸边不留补白（封面/"
                         "满版页推荐，密排正文页顶底会被裁）")
+    p.add_argument("--no-realism", action="store_true",
+                   help="关闭实拍质感滤镜（默认开启）：模拟随手拍摄的光照适配与拍摄损耗，让合成结果更像实拍")
+    p.add_argument("--realism-strength", type=int, default=70,
+                   help="实拍质感滤镜强度，0-100（默认 70）；0 等效于关闭")
 
     c = sub.add_parser("collage", help="将一批图片拼接成单张拼图")
     c.add_argument("--input-dir", required=True, help="输入图片目录")
@@ -784,7 +794,8 @@ def main():
         list_templates()
     elif args.cmd == "process":
         process(args.input, args.templates, args.output, args.format,
-                cover_source=args.cover_source, fit=args.fit)
+                cover_source=args.cover_source, fit=args.fit,
+                realism_enabled=not args.no_realism, realism_strength=args.realism_strength)
     elif args.cmd == "collage":
         collage(args.input_dir, args.output, args.template, args.rows, args.cols,
                 args.pages, json_result=args.json_result)

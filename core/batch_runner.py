@@ -16,6 +16,7 @@ from core.image_processor import (
     embed_image_pil_fast,
     precompute_template_cache,
 )
+from core.realism_filter import apply_realism, precompute_realism
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".wmv"}
@@ -71,6 +72,8 @@ class BatchRunner(QThread):
         output_format: str = "JPEG",   # "PNG" or "JPEG"
         output_width: int = 0,
         diversify_config=None,
+        realism_enabled: bool = True,
+        realism_strength: int = 70,
         parent=None,
     ):
         super().__init__(parent)
@@ -79,6 +82,8 @@ class BatchRunner(QThread):
         self.output_format = output_format
         self.output_width = output_width
         self.diversify_config = diversify_config
+        self.realism_enabled = realism_enabled
+        self.realism_strength = realism_strength
         self._diversify_run_seed = random.SystemRandom().getrandbits(64)
         self._abort = False
 
@@ -148,6 +153,11 @@ class BatchRunner(QThread):
                         else:
                             render_bg = render_bg.copy()
 
+                        realism_strength = self.realism_strength if self.realism_enabled else 0
+                        realism_cache = precompute_realism(
+                            render_bg, render_points, strength=realism_strength
+                        )
+
                     def _process_one_image(i: int, img_path: str):
                         if self._abort:
                             raise RuntimeError("已取消")
@@ -165,6 +175,8 @@ class BatchRunner(QThread):
                                 )
                             else:
                                 result = embed_image_pil_fast(ppt_img, cache)
+
+                        result = apply_realism(result, realism_cache)
 
                         if self._abort:
                             raise RuntimeError("已取消")
@@ -230,7 +242,7 @@ class VideoRunner(QThread):
     progress = pyqtSignal(int, int, str)
     finished = pyqtSignal(bool, str)
 
-    def __init__(self, tasks, output_dir, parent=None):
+    def __init__(self, tasks, output_dir, realism_enabled: bool = True, realism_strength: int = 70, parent=None):
         """
         tasks: List of (video_path: str, templates: List[Template])
         Each video frame is treated as PPT content; template's background is the scene.
@@ -239,6 +251,8 @@ class VideoRunner(QThread):
         super().__init__(parent)
         self.tasks = tasks
         self.output_dir = output_dir
+        self.realism_enabled = realism_enabled
+        self.realism_strength = realism_strength
         self._abort = False
         self._user_abort = False
 
@@ -338,6 +352,15 @@ class VideoRunner(QThread):
                             bg_img, template.screen_points, ppt_size=ppt_size
                         )
                         bg_w, bg_h = cache["bg_size"]
+
+                        realism_strength = self.realism_strength if self.realism_enabled else 0
+                        realism_cache = precompute_realism(
+                            bg_img, template.screen_points, strength=realism_strength
+                        )
+
+                        def _embed_and_realism(pil, cache, frame_i, realism_cache=realism_cache):
+                            embedded = embed_image_pil_fast(pil, cache)
+                            return apply_realism(embedded, realism_cache, frame_index=frame_i)
 
                         with av.open(video_path) as inp, \
                              av.open(out_path, "w", format="mp4") as outp, \
@@ -672,7 +695,7 @@ class VideoRunner(QThread):
                                             break
 
                                         fi, pts_seconds, pil = item
-                                        fut = pool.submit(embed_image_pil_fast, pil, cache)
+                                        fut = pool.submit(_embed_and_realism, pil, cache, fi)
                                         pending.append((fi, pts_seconds, fut))
                                         _drain(window)
 
