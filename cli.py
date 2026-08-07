@@ -201,7 +201,8 @@ def _place_covers(output_root: str, cover_source: str):
 
 def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: str,
             cover_source: str | None = None, fit: str = "stretch",
-            realism_enabled: bool = True, realism_strength: int = 70):
+            realism_enabled: bool = True, realism_strength: int = 70,
+            realism_strength_explicit: bool = False):
     # 延迟导入，避免系统没装 Pillow 时 list-templates 也报错
     sys.path.insert(0, os.path.dirname(__file__))
     from PIL import Image
@@ -246,7 +247,12 @@ def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: 
         bg_img = Image.open(bg_path)
         is_document = tpl.get("template_type") == "document_paper"
         cache = None if is_document else precompute_template_cache(bg_img, tpl["screen_points"])
-        realism_strength_effective = realism_strength if realism_enabled else 0
+        # 文档纸张类默认不套实拍质感滤镜（2026-08-07 用户定）：滤镜的环境光照与暗角
+        # 对课件截图是加分的（像随手拍屏），但 A4 文档是密排小字，压暗直接伤可读性——
+        # 实测教案页纸面平均亮度从 173 被压到 120，暗了三成。屏幕/大屏类保持默认开启。
+        # 用户显式传 --realism-strength 时以传入值为准，不被这条覆盖。
+        realism_default_off = is_document and not realism_strength_explicit
+        realism_strength_effective = 0 if (not realism_enabled or realism_default_off) else realism_strength
         realism_cache = precompute_realism(bg_img, tpl["screen_points"], strength=realism_strength_effective)
 
         out_sub = os.path.join(output_dir, tpl_key)
@@ -739,8 +745,9 @@ def main():
                         "满版页推荐，密排正文页顶底会被裁）")
     p.add_argument("--no-realism", action="store_true",
                    help="关闭实拍质感滤镜（默认开启）：模拟随手拍摄的光照适配与拍摄损耗，让合成结果更像实拍")
-    p.add_argument("--realism-strength", type=int, default=70,
-                   help="实拍质感滤镜强度，0-100（默认 70）；0 等效于关闭")
+    p.add_argument("--realism-strength", type=int, default=None,
+                   help="实拍质感滤镜强度，0-100（屏幕类默认 70，文档纸张类默认 0 即关闭）；"
+                        "显式传入时对两类模板都以传入值为准")
 
     c = sub.add_parser("collage", help="将一批图片拼接成单张拼图")
     c.add_argument("--input-dir", required=True, help="输入图片目录")
@@ -795,7 +802,9 @@ def main():
     elif args.cmd == "process":
         process(args.input, args.templates, args.output, args.format,
                 cover_source=args.cover_source, fit=args.fit,
-                realism_enabled=not args.no_realism, realism_strength=args.realism_strength)
+                realism_enabled=not args.no_realism,
+                realism_strength=70 if args.realism_strength is None else args.realism_strength,
+                realism_strength_explicit=args.realism_strength is not None)
     elif args.cmd == "collage":
         collage(args.input_dir, args.output, args.template, args.rows, args.cols,
                 args.pages, json_result=args.json_result)
