@@ -775,6 +775,8 @@ class MainWindow(QMainWindow):
         self.template_list = SlowTemplateListWidget()
         self.template_list.setMinimumHeight(90)
         self.template_list.setMaximumHeight(200)
+        # 多选：Ctrl 点选、Shift 连选，供「删除」按钮一次删多个；单击行为不变（仍触发加载预览）
+        self.template_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.template_list.currentRowChanged.connect(self._on_template_selected)
         tpl_frame = QWidget(); tpl_frame.setObjectName("tpl_list_frame")
         tfl = QVBoxLayout(tpl_frame); tfl.setContentsMargins(4, 4, 4, 4); tfl.setSpacing(0)
@@ -1402,16 +1404,37 @@ class MainWindow(QMainWindow):
         self.tpl_preset_combo.setVisible(False)
 
     def _delete_template(self):
-        item = self.template_list.currentItem()
-        if not item: return
-        key = item.data(Qt.ItemDataRole.UserRole) or item.text()
-        tpl = self.tm.load(key)
-        label = tpl.name if tpl else key
-        if QMessageBox.question(self, "确认删除", f"删除模板「{label}」？",
+        items = self.template_list.selectedItems()
+        if not items:
+            item = self.template_list.currentItem()
+            if not item: return
+            items = [item]
+
+        keys = []
+        for item in items:
+            key = item.data(Qt.ItemDataRole.UserRole) or item.text()
+            if key not in keys:
+                keys.append(key)
+
+        def label_of(key):
+            tpl = self.tm.load(key)
+            return tpl.name if tpl else key
+
+        if len(keys) == 1:
+            prompt = f"删除模板「{label_of(keys[0])}」？"
+        else:
+            shown = [label_of(k) for k in keys[:10]]
+            listing = "\n".join(f"· {name}" for name in shown)
+            if len(keys) > 10:
+                listing += f"\n… 等 {len(keys)} 个"
+            prompt = f"确认删除以下 {len(keys)} 个模板？此操作不可恢复。\n\n{listing}"
+
+        if QMessageBox.question(self, "确认删除", prompt,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         ) == QMessageBox.StandardButton.Yes:
-            self.tm.delete(key)
-            if self._loaded_tpl_name == key:
+            for key in keys:
+                self.tm.delete(key)
+            if self._loaded_tpl_name in keys:
                 self._loaded_tpl_name = None
             self._refresh_template_list()
 
