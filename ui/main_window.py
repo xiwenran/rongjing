@@ -5,6 +5,7 @@ import sys
 import subprocess
 import tempfile
 import zipfile
+import time
 from datetime import datetime
 
 from PyQt6.QtWidgets import (
@@ -586,6 +587,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(STYLE)
 
         self.tm = TemplateManager(templates_dir, backgrounds_dir=backgrounds_dir)
+        self._app_data_dir = os.path.dirname(templates_dir)
         self._backgrounds_dir = backgrounds_dir
         self._collages_dir = collages_dir
         self._collage_tab = None
@@ -604,14 +606,18 @@ class MainWindow(QMainWindow):
         self._last_dir_output  = self._settings.value("last_dir_output",   _home)
         self._last_dir_images  = self._settings.value("last_dir_images",   _home)
         self._last_dir_videos  = self._settings.value("last_dir_videos",   _home)
+        self._last_preview_image = self._settings.value("last_preview_image", "")
         self._batch_output_width = int(self._settings.value("batch_output_width", 1920))
         self._realism_enabled = bool(self._settings.value("realism_enabled", True, type=bool))
         self._realism_strength = int(self._settings.value("realism_strength", 70))
+        self._cache_auto_cleanup = bool(self._settings.value("cache/auto_cleanup", False, type=bool))
+        self._cache_retention_days = int(self._settings.value("cache/retention_days", 30))
 
         self._build_ui()
         self._on_template_category_changed()
         self._set_batch_mode(0)   # apply initial mode button styles
         self._refresh_template_list()
+        self._run_auto_cache_cleanup()
 
     # ── Root ──────────────────────────────────────────────────────────────────
 
@@ -880,6 +886,8 @@ class MainWindow(QMainWindow):
         fv.addSpacing(8)
         self.preview_path_edit = QLineEdit(); self.preview_path_edit.setReadOnly(True)
         self.preview_path_edit.setPlaceholderText("未加载预览图片")
+        if self._last_preview_image and os.path.isfile(self._last_preview_image):
+            self.preview_path_edit.setText(self._last_preview_image)
         fv.addWidget(self.preview_path_edit)
         fv.addSpacing(6)
         fv.addLayout(_row(_btn("选择图片", self._load_preview), _btn("清除", self._clear_preview, "ghost")))
@@ -917,6 +925,8 @@ class MainWindow(QMainWindow):
         # ── Canvas ────────────────────────────────────────────────────────────
         self.canvas = CanvasWidget()
         self.canvas.points_changed.connect(self._on_points_changed)
+        if self._last_preview_image and os.path.isfile(self._last_preview_image):
+            self.canvas.set_preview(self._last_preview_image)
         root.addWidget(self.canvas, 1)
         return tab
 
@@ -993,6 +1003,8 @@ class MainWindow(QMainWindow):
         _h = _lbl("选择主文件夹（内含子文件夹，每个子文件夹放一组图片；若无子文件夹则直接处理根目录图片）", "hint"); _h.setWordWrap(True); ff.addWidget(_h)
         self.input_dir_edit = QLineEdit(); self.input_dir_edit.setReadOnly(True)
         self.input_dir_edit.setPlaceholderText("选择主文件夹路径…")
+        if self._settings.contains("last_dir_input") and os.path.isdir(self._last_dir_input):
+            self.input_dir_edit.setText(self._last_dir_input)
         ff.addLayout(_row(self.input_dir_edit, _btn("选择", self._browse_input, w=64), spacing=6))
         ff.addWidget(_btn("扫描文件夹", self._scan_subfolders, "scan"))
         fv.addWidget(c1_folder)
@@ -1024,6 +1036,8 @@ class MainWindow(QMainWindow):
         fv.addSpacing(10)
         self.output_dir_edit = QLineEdit(); self.output_dir_edit.setReadOnly(True)
         self.output_dir_edit.setPlaceholderText("选择输出文件夹…")
+        if self._settings.contains("last_dir_output") and os.path.isdir(self._last_dir_output):
+            self.output_dir_edit.setText(self._last_dir_output)
         fv.addLayout(_row(self.output_dir_edit, _btn("选择", self._browse_output, w=64), spacing=6))
         fv.addSpacing(8)
 
@@ -1046,10 +1060,12 @@ class MainWindow(QMainWindow):
         fv.addWidget(self._format_row_widget)
         fv.addSpacing(12)
 
+        realism_row = QHBoxLayout()
+        realism_row.setSpacing(12)
         self.realism_check = QCheckBox("实拍质感（模拟随手拍摄效果）")
         self.realism_check.setChecked(self._realism_enabled)
         self.realism_check.toggled.connect(self._save_realism_enabled)
-        fv.addWidget(self.realism_check)
+        realism_row.addWidget(self.realism_check, 1, Qt.AlignmentFlag.AlignTop)
 
         self._realism_strength_widget = QWidget(); self._fix_bg(self._realism_strength_widget, _SIDE)
         rsw_layout = QHBoxLayout(self._realism_strength_widget)
@@ -1061,8 +1077,8 @@ class MainWindow(QMainWindow):
         self.realism_strength_spin.setFixedWidth(72)
         self.realism_strength_spin.valueChanged.connect(self._save_realism_strength)
         rsw_layout.addWidget(self.realism_strength_spin)
-        rsw_layout.addStretch()
-        fv.addWidget(self._realism_strength_widget)
+        realism_row.addWidget(self._realism_strength_widget, 0, Qt.AlignmentFlag.AlignTop)
+        fv.addLayout(realism_row)
 
         fv.addSpacing(16); fv.addWidget(_sep()); fv.addSpacing(14)
         from ui.diversify_widget import DiversifyWidget
@@ -1100,7 +1116,7 @@ class MainWindow(QMainWindow):
         right_body = QWidget(); self._fix_bg(right_body, _WIN)
         self._mark_styled_bg(right_body, "batch_scroll_body")
         rlv = QVBoxLayout(right_body)
-        rlv.setContentsMargins(20, 20, 20, 20); rlv.setSpacing(12)
+        rlv.setContentsMargins(20, 14, 20, 20); rlv.setSpacing(12)
 
         # Template assignment card (folder / image modes)
         c2 = _card(_lbl("场景模板", "h2"))
@@ -1124,8 +1140,8 @@ class MainWindow(QMainWindow):
         tbl_wrap = QWidget(); tbl_wrap.setObjectName("inset")
         tw = QVBoxLayout(tbl_wrap); tw.setContentsMargins(0, 0, 0, 0)
         tw.addWidget(self.subfolder_table)
-        c2.layout().addWidget(tbl_wrap)
-        rlv.addWidget(c2)
+        c2.layout().addWidget(tbl_wrap, 1)
+        rlv.addWidget(c2, 1)
         self._c2 = c2
 
         # Video table card (video mode, right panel)
@@ -1144,13 +1160,12 @@ class MainWindow(QMainWindow):
         _set_green_selection(self.video_table)
         vid_wrap = QWidget(); vid_wrap.setObjectName("inset")
         vw = QVBoxLayout(vid_wrap); vw.setContentsMargins(0, 0, 0, 0); vw.addWidget(self.video_table)
-        c_video_right.layout().addWidget(vid_wrap)
+        c_video_right.layout().addWidget(vid_wrap, 1)
         c_video_right.hide()
-        rlv.addWidget(c_video_right)
+        rlv.addWidget(c_video_right, 1)
         self._c_video_right = c_video_right
         self._video_row_selections = {}
 
-        rlv.addStretch()
         right_scroll.setWidget(right_body)
         main_hl.addWidget(right_scroll, 1)
 
@@ -1211,7 +1226,7 @@ class MainWindow(QMainWindow):
 
         # Data backup card
         backup_card = _card(_lbl("数据备份与恢复", "h2"))
-        backup_card.layout().addWidget(_lbl("导出或导入所有模板和背景图数据。", "hint"))
+        backup_card.layout().addWidget(_lbl("导出或导入模板、背景图、拼图模板和软件设置。", "hint"))
         backup_card.layout().addSpacing(8)
         btn_export = QPushButton("导出备份 (.zip)")
         btn_export.clicked.connect(self._export_backup)
@@ -1219,6 +1234,39 @@ class MainWindow(QMainWindow):
         btn_import.clicked.connect(self._import_backup)
         backup_card.layout().addLayout(_row(btn_export, btn_import, None))
         lv.addWidget(backup_card)
+
+        # Cache cleanup card
+        cache_card = _card(_lbl("缓存清理", "h2"))
+        cache_card.layout().addWidget(_lbl("自动清理 AI 生成历史、PPT 导出缓存和未被模板使用的背景图。", "hint"))
+        cache_card.layout().addSpacing(8)
+
+        self.cache_auto_check = QCheckBox("启动时自动清理")
+        self.cache_auto_check.setChecked(self._cache_auto_cleanup)
+        self.cache_auto_check.stateChanged.connect(self._save_cache_cleanup_settings)
+
+        self.cache_days_spin = QSpinBox()
+        self.cache_days_spin.setRange(1, 365)
+        self.cache_days_spin.setValue(max(1, self._cache_retention_days))
+        self.cache_days_spin.setSuffix(" 天")
+        self.cache_days_spin.valueChanged.connect(self._save_cache_cleanup_settings)
+
+        cache_form = QFormLayout()
+        cache_form.setHorizontalSpacing(12)
+        cache_form.setVerticalSpacing(10)
+        cache_form.addRow("自动清理", self.cache_auto_check)
+        cache_form.addRow("保留最近", self.cache_days_spin)
+        cache_card.layout().addLayout(cache_form)
+
+        self.cache_status_label = _lbl("", "hint")
+        cache_card.layout().addWidget(self.cache_status_label)
+        btn_scan_cache = QPushButton("重新统计缓存")
+        btn_scan_cache.clicked.connect(self._refresh_cache_status)
+        btn_clean_cache = QPushButton("立即清理缓存")
+        btn_clean_cache.setObjectName("danger")
+        btn_clean_cache.clicked.connect(self._manual_cleanup_cache)
+        cache_card.layout().addLayout(_row(btn_scan_cache, btn_clean_cache, None))
+        lv.addWidget(cache_card)
+        self._refresh_cache_status()
 
         # Data management card
         data_card = _card(_lbl("数据管理", "h2"))
@@ -1474,12 +1522,14 @@ class MainWindow(QMainWindow):
             (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".heic"),
         )
         collages = self._backup_files(self._collages_dir, ".json")
+        settings_data = self._settings_snapshot()
         manifest = {
-            "version": 1,
+            "version": 2,
             "created": datetime.now().isoformat(timespec="seconds"),
             "templates_count": len(templates),
             "collages_count": len(collages),
             "backgrounds_count": len(backgrounds),
+            "settings_count": len(settings_data),
         }
 
         try:
@@ -1490,6 +1540,7 @@ class MainWindow(QMainWindow):
                     zf.write(src, os.path.join("backgrounds", os.path.basename(src)))
                 for src in collages:
                     zf.write(src, os.path.join("collages", os.path.basename(src)))
+                zf.writestr("settings.json", json.dumps(settings_data, ensure_ascii=False, indent=2))
                 zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             QMessageBox.information(self, "导出完成", f"备份已导出：\n{path}")
         except Exception as e:
@@ -1563,6 +1614,7 @@ class MainWindow(QMainWindow):
 
                 if mode == "overwrite":
                     self._clear_backup_target_dirs(templates_dir, backgrounds_dir, collages_dir)
+                    self._settings.clear()
                     for src_dir, dst_dir in (
                         (extract_templates_dir, templates_dir),
                         (extract_backgrounds_dir, backgrounds_dir),
@@ -1573,8 +1625,11 @@ class MainWindow(QMainWindow):
                                 os.path.join(src_dir, filename),
                                 os.path.join(dst_dir, filename),
                             )
+                if "settings.json" in names:
+                    self._restore_settings(json.loads(zf.read("settings.json").decode("utf-8")), mode)
 
             self._refresh_template_list()
+            self._reload_settings_ui()
             if self._collage_tab is not None and hasattr(self._collage_tab, "_load_template_list"):
                 self._collage_tab._load_template_list()
             QMessageBox.information(self, "导入完成", "备份数据已导入。")
@@ -1670,6 +1725,169 @@ class MainWindow(QMainWindow):
             json.dump(data, f, ensure_ascii=False, indent=2)
         return True
 
+    def _settings_snapshot(self) -> dict:
+        return {key: self._settings.value(key) for key in self._settings.allKeys()}
+
+    def _restore_settings(self, data: dict, mode: str):
+        if not isinstance(data, dict):
+            return
+        for key, value in data.items():
+            if mode == "merge" and self._settings.contains(key):
+                continue
+            self._settings.setValue(key, value)
+        self._settings.sync()
+
+    def _reload_settings_ui(self):
+        self.ai_api_key_edit.setText(str(self._settings.value("ai/api_key", "") or ""))
+        self.ai_base_url_edit.setText(str(self._settings.value("ai/base_url", "https://api.openai.com/v1") or "https://api.openai.com/v1"))
+        self.ai_model_edit.setText(str(self._settings.value("ai/model", "gpt-image-2") or "gpt-image-2"))
+        self._cache_auto_cleanup = bool(self._settings.value("cache/auto_cleanup", False, type=bool))
+        self._cache_retention_days = int(self._settings.value("cache/retention_days", 30))
+        self.cache_auto_check.setChecked(self._cache_auto_cleanup)
+        self.cache_days_spin.setValue(max(1, self._cache_retention_days))
+        self._refresh_cache_status()
+
+    def _save_cache_cleanup_settings(self, *_):
+        if not hasattr(self, "cache_auto_check"):
+            return
+        self._cache_auto_cleanup = self.cache_auto_check.isChecked()
+        self._cache_retention_days = self.cache_days_spin.value()
+        self._settings.setValue("cache/auto_cleanup", self._cache_auto_cleanup)
+        self._settings.setValue("cache/retention_days", self._cache_retention_days)
+        self._refresh_cache_status()
+
+    def _run_auto_cache_cleanup(self):
+        if not self._cache_auto_cleanup:
+            return
+        try:
+            self._cleanup_cache(self._cache_retention_days)
+        except Exception:
+            pass
+
+    def _manual_cleanup_cache(self):
+        days = self.cache_days_spin.value()
+        stats = self._collect_cache_stats(days)
+        if stats["expired_count"] <= 0:
+            QMessageBox.information(self, "无需清理", "当前没有超过保留天数的缓存。")
+            return
+        ret = QMessageBox.warning(
+            self,
+            "确认清理缓存",
+            f"将删除超过 {days} 天的缓存数据：\n"
+            f"{stats['expired_count']} 个项目，约 {self._format_bytes(stats['expired_bytes'])}\n\n"
+            "不会删除正式模板和仍被模板引用的背景图。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        removed_count, removed_bytes = self._cleanup_cache(days)
+        self._refresh_cache_status()
+        QMessageBox.information(
+            self,
+            "清理完成",
+            f"已清理 {removed_count} 个缓存项目，释放约 {self._format_bytes(removed_bytes)}。",
+        )
+
+    def _refresh_cache_status(self):
+        if not hasattr(self, "cache_status_label"):
+            return
+        stats = self._collect_cache_stats(self.cache_days_spin.value())
+        self.cache_status_label.setText(
+            f"缓存合计 {stats['total_count']} 个项目，约 {self._format_bytes(stats['total_bytes'])}；"
+            f"超过保留天数 {stats['expired_count']} 个。"
+        )
+
+    def _collect_cache_stats(self, days: int) -> dict:
+        cutoff = time.time() - max(1, days) * 86400
+        total_count = total_bytes = expired_count = expired_bytes = 0
+        for path in self._cache_items():
+            size = self._path_size(path)
+            total_count += 1
+            total_bytes += size
+            try:
+                expired = os.path.getmtime(path) < cutoff
+            except OSError:
+                expired = False
+            if expired:
+                expired_count += 1
+                expired_bytes += size
+        return {
+            "total_count": total_count,
+            "total_bytes": total_bytes,
+            "expired_count": expired_count,
+            "expired_bytes": expired_bytes,
+        }
+
+    def _cleanup_cache(self, days: int) -> tuple[int, int]:
+        cutoff = time.time() - max(1, days) * 86400
+        removed_count = removed_bytes = 0
+        for path in self._cache_items():
+            try:
+                if os.path.getmtime(path) >= cutoff:
+                    continue
+                size = self._path_size(path)
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                elif os.path.isfile(path):
+                    os.remove(path)
+                removed_count += 1
+                removed_bytes += size
+            except OSError:
+                continue
+        return removed_count, removed_bytes
+
+    def _cache_items(self) -> list[str]:
+        items = []
+        for directory in (
+            os.path.join(os.path.expanduser("~"), ".rongjing", "ai_cache"),
+            os.path.join(self._app_data_dir, "ppt_export"),
+        ):
+            if os.path.isdir(directory):
+                items.extend(os.path.join(directory, name) for name in os.listdir(directory))
+        items.extend(self._orphan_background_files())
+        return [path for path in items if os.path.exists(path)]
+
+    def _orphan_background_files(self) -> list[str]:
+        backgrounds_dir = getattr(self.tm, "backgrounds_dir", None)
+        if not backgrounds_dir or not os.path.isdir(backgrounds_dir):
+            return []
+        referenced = set()
+        for tpl in self.tm.load_all():
+            bg = getattr(tpl, "background_path", "") or ""
+            if bg:
+                referenced.add(os.path.abspath(bg))
+        orphans = []
+        for name in os.listdir(backgrounds_dir):
+            path = os.path.join(backgrounds_dir, name)
+            if os.path.isfile(path) and os.path.abspath(path) not in referenced:
+                orphans.append(path)
+        return orphans
+
+    @staticmethod
+    def _path_size(path: str) -> int:
+        if os.path.isfile(path):
+            try:
+                return os.path.getsize(path)
+            except OSError:
+                return 0
+        total = 0
+        for root, _dirs, names in os.walk(path):
+            for name in names:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    pass
+        return total
+
+    @staticmethod
+    def _format_bytes(size: int) -> str:
+        value = float(size)
+        for unit in ("B", "KB", "MB", "GB"):
+            if value < 1024 or unit == "GB":
+                return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+            value /= 1024
+
     def _save_template(self):
         name = self.tpl_name_edit.text().strip()
         if not name:
@@ -1730,11 +1948,16 @@ class MainWindow(QMainWindow):
         path = pick_image(self, "选择 PPT 预览图片", self._last_dir_preview)
         if path:
             self._save_dir("preview", os.path.dirname(path))
+            self._last_preview_image = path
+            self._settings.setValue("last_preview_image", path)
             self.preview_path_edit.setText(path)
             self.canvas.set_preview(path)
 
     def _clear_preview(self):
-        self.preview_path_edit.clear(); self.canvas.clear_preview()
+        self.preview_path_edit.clear()
+        self._last_preview_image = ""
+        self._settings.remove("last_preview_image")
+        self.canvas.clear_preview()
 
     def _clear_points(self):
         self.canvas.clear_points()

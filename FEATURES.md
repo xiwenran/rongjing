@@ -144,7 +144,7 @@
 
 ### 9.1 路径记忆（跨会话持久化）
 - [x] 每个文件/文件夹选择器独立记忆上次使用路径，下次打开默认从该路径开始
-- [x] 使用 `QSettings("xhsbj", "PPTComposer")` 持久化
+- [x] 使用 `QSettings("融景", "RongJing")` 持久化
 
 | 键名 | 用途 |
 |------|------|
@@ -154,6 +154,16 @@
 | `last_dir_output` | 输出文件夹选择器 |
 | `last_dir_images` | 图片批量文件选择器 |
 | `last_dir_videos` | 视频文件选择器 |
+| `last_preview_image` | 模板配置页 PPT 预览图片 |
+| `dewatermark/last_dir_files` | 去水印多图选择器 |
+| `dewatermark/last_dir_folder` | 去水印文件夹选择器 |
+| `dewatermark/last_output_dir` | 去水印输出目录 |
+
+### 9.4 数据备份与缓存清理
+- [x] 设置页备份导出包含普通模板、背景图、拼图模板和软件设置
+- [x] 设置页备份导入支持合并或覆盖，并可恢复软件设置
+- [x] 设置页缓存清理支持统计缓存、手动清理和启动自动清理开关
+- [x] 清理范围限定为 AI 生成历史、拼图 PPT 导出缓存、未被模板引用的孤立背景图
 
 ### 9.2 文件选择器
 - [x] macOS：优先使用 `osascript` 调起原生 Finder 选择器（支持 `default location`）

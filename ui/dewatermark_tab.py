@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 from PIL import Image
-from PyQt6.QtCore import QEvent, Qt
+from PyQt6.QtCore import QEvent, QSettings, Qt
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -49,6 +49,10 @@ class DewatermarkTab(QWidget):
         self._preview_index = 0
         self._preview_source: Image.Image | None = None
         self._preview_processed: Image.Image | None = None
+        self._settings = QSettings("融景", "RongJing")
+        self._last_dir_files = str(self._settings.value("dewatermark/last_dir_files", os.path.expanduser("~")) or os.path.expanduser("~"))
+        self._last_dir_folder = str(self._settings.value("dewatermark/last_dir_folder", os.path.expanduser("~")) or os.path.expanduser("~"))
+        self._output_dir = str(self._settings.value("dewatermark/last_output_dir", "") or "")
         self.setAcceptDrops(True)
         self.setObjectName("DewatermarkTab")
         self.setStyleSheet(self._stylesheet())
@@ -111,7 +115,7 @@ class DewatermarkTab(QWidget):
     def _build_right_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setContentsMargins(18, 20, 18, 18)
         layout.setSpacing(14)
         layout.addWidget(self._build_preview_area(), 1)
         layout.addWidget(self._build_export_bar(), 0)
@@ -201,6 +205,7 @@ class DewatermarkTab(QWidget):
 
         self._file_list = QListWidget()
         self._file_list.setObjectName("fileList")
+        self._file_list.setMinimumHeight(340)
         self._file_list.currentRowChanged.connect(self._on_preview_file_changed)
         layout.addWidget(self._file_list, 1)
         return box
@@ -297,14 +302,16 @@ class DewatermarkTab(QWidget):
 
     def _choose_dir(self):
         self._set_source_mode("folder")
-        start = os.path.expanduser("~")
+        start = self._last_dir_folder if os.path.isdir(self._last_dir_folder) else os.path.expanduser("~")
         path = QFileDialog.getExistingDirectory(self, "选择图片文件夹", start)
         if path:
+            self._last_dir_folder = path
+            self._settings.setValue("dewatermark/last_dir_folder", path)
             self._set_files(_scan_images(path))
 
     def _choose_files(self):
         self._set_source_mode("files")
-        start = os.path.expanduser("~")
+        start = self._last_dir_files if os.path.isdir(self._last_dir_files) else os.path.expanduser("~")
         paths, _ = QFileDialog.getOpenFileNames(
             self,
             "选择图片",
@@ -312,13 +319,16 @@ class DewatermarkTab(QWidget):
             "Images (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff)",
         )
         if paths:
+            self._last_dir_files = os.path.dirname(paths[0])
+            self._settings.setValue("dewatermark/last_dir_files", self._last_dir_files)
             self._set_files(paths)
 
     def _choose_output_dir(self):
-        start = self._output_dir or os.path.expanduser("~")
+        start = self._output_dir or self._last_dir_folder or os.path.expanduser("~")
         path = QFileDialog.getExistingDirectory(self, "选择输出目录", start)
         if path:
             self._output_dir = path
+            self._settings.setValue("dewatermark/last_output_dir", path)
             self._refresh_state()
 
     def _set_files(self, files: list[str]):
