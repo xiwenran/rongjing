@@ -26,6 +26,7 @@
 
 ## 已关闭
 
+- 拼图预览切换性能优化 ✅ `18a594e9e2771b734a8edbdafaa76f91ec9cffe7` — 验证: `python3 -m py_compile ui/collage_tab.py` 与 `git diff --check` 通过；本轮按用户要求未做重打包/全量测试
 - 拼图页导入入口简化与按来源分目录导出 ✅ `9d22c84439cd05e08fc8ffbba554218383cdbd13` — 验证: `python3 -m py_compile ui/collage_tab.py` 与 `git diff --check` 通过；本轮按用户要求未做重打包/全量测试
 - 设置页数据备份/缓存清理 + 本轮 UI 路径记忆修复 ✅ `9b60999b55cbdd1dea3671498fe89d88f2556c27` — 验证: `python3 -m py_compile ui/main_window.py ui/dewatermark_tab.py` 与 `git diff --check` 通过；本轮按用户要求未做重打包/全量测试
 - 拼图上大图布局 + 模板批量删除入口显化 ✅ `73c5e4fcaa1ce95b5daecd189952c17c43adb283` — 验证: `python3 _test_collage.py`、`python3 _test_cli_collage.py`、`QT_QPA_PLATFORM=offscreen python3 _test_collage_tab.py`、`python3 -m py_compile core/collage_processor.py models/collage_model.py ui/collage_tab.py ui/main_window.py` 均通过；UI 测试覆盖 hero 布局按 5 页一组自动生成 3 张拼图
