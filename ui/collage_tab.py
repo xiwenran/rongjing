@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QAbstractItemView,
+    QButtonGroup,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -159,11 +160,14 @@ class CollageTab(QWidget):
         self._suppress_emit = False
         self._image_files: list[str] = []
         self._input_dir = ""
+        self._source_name = ""
         self._output_dir = ""
         self._excluded_indices: set[int] = set()
         self._preview_collage_index = 0
         self._collage_runner: CollageBatchRunner | None = None
         self._ppt_import_worker: _PPTImportWorker | None = None
+        self._ppt_import_queue: list[str] = []
+        self._ppt_import_results: list[tuple[str, str]] = []
         self._cached_preview: Image.Image | None = None
         self._batch_mode = False
         self._auto_adapt_active = False
@@ -175,6 +179,7 @@ class CollageTab(QWidget):
         self._build_ui()
         self._load_template_list()
         self._wire_signals()
+        self._sync_layout_buttons()
         self._refresh_preset_state()
         self._refresh_mini_preview()
         self._restore_last_dirs()
@@ -219,6 +224,7 @@ class CollageTab(QWidget):
         if tpl.output_count > 0 and hasattr(self, "_output_count_spin"):
             self._output_count_spin.setValue(tpl.output_count)
         self._update_color_swatch()
+        self._sync_layout_buttons()
         self._refresh_preset_state()
         self._refresh_mini_preview()
         del blockers
@@ -239,7 +245,7 @@ class CollageTab(QWidget):
             return
         path = urls[0].toLocalFile()
         if path.lower().endswith((".pptx", ".ppt")):
-            self._import_pptx(path)
+            self._start_ppt_imports([path])
         elif os.path.isdir(path):
             self._set_input_dir(path)
         elif os.path.isfile(path) and os.path.splitext(path)[1].lower() in _IMAGE_EXTS:
@@ -310,28 +316,17 @@ class CollageTab(QWidget):
 
         mode_row = QHBoxLayout()
         mode_row.setSpacing(8)
-        self._single_mode_btn = QPushButton("单个文件夹")
-        self._single_mode_btn.setCheckable(True)
-        self._single_mode_btn.setChecked(True)
-        self._single_mode_btn.setObjectName("preset_btn")
-        self._batch_mode_btn = QPushButton("批量文件夹")
-        self._batch_mode_btn.setCheckable(True)
-        self._batch_mode_btn.setObjectName("preset_btn")
-        mode_row.addWidget(self._single_mode_btn)
-        mode_row.addWidget(self._batch_mode_btn)
+        self._import_folder_btn = QPushButton("导入文件夹")
+        self._import_folder_btn.setObjectName("primary")
+        self._import_file_btn = QPushButton("导入文件")
+        self._import_file_btn.setObjectName("preset_btn")
+        self._import_folder_btn.setToolTip("选择一个图片文件夹；若里面有多个子文件夹，会按批量文件夹处理")
+        self._import_file_btn.setToolTip("选择一张或多张图片，也可选择一个或多个 PPT")
+        mode_row.addWidget(self._import_folder_btn)
+        mode_row.addWidget(self._import_file_btn)
         content.addLayout(mode_row)
 
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        self._choose_dir_btn = QPushButton("选择文件夹")
-        self._choose_dir_btn.clicked.connect(self._choose_input_dir)
-        self._import_ppt_btn = QPushButton("导入 PPT")
-        self._import_ppt_btn.clicked.connect(self._choose_pptx)
-        btn_row.addWidget(self._choose_dir_btn)
-        btn_row.addWidget(self._import_ppt_btn)
-        content.addLayout(btn_row)
-
-        self._input_path_label = self._label("未选择（也可直接拖入文件夹或 PPT）", "hint")
+        self._input_path_label = self._label("未选择（也可直接拖入文件夹、图片或 PPT）", "hint")
         self._input_path_label.setWordWrap(True)
         content.addWidget(self._input_path_label)
         self._input_count_label = self._label("", "hint")
@@ -378,7 +373,21 @@ class CollageTab(QWidget):
         self._layout_combo = QComboBox()
         self._layout_combo.addItem("普通网格", "grid")
         self._layout_combo.addItem("上大图", "hero")
-        self._add_grid_field(grid, 0, 0, "布局类型", self._layout_combo)
+        self._layout_mode_group = QButtonGroup(self)
+        self._layout_mode_group.setExclusive(True)
+        self._layout_grid_btn = QPushButton("普通网格")
+        self._layout_grid_btn.setCheckable(True)
+        self._layout_grid_btn.setObjectName("preset_btn")
+        self._layout_hero_btn = QPushButton("上大图")
+        self._layout_hero_btn.setCheckable(True)
+        self._layout_hero_btn.setObjectName("preset_btn")
+        self._layout_mode_group.addButton(self._layout_grid_btn)
+        self._layout_mode_group.addButton(self._layout_hero_btn)
+        layout_type_row = QHBoxLayout()
+        layout_type_row.setSpacing(6)
+        layout_type_row.addWidget(self._layout_grid_btn)
+        layout_type_row.addWidget(self._layout_hero_btn)
+        self._add_grid_field(grid, 0, 0, "布局类型", layout_type_row)
         self._add_grid_field(grid, 0, 1, "下方列数", self._col_spin)
         self._add_grid_field(grid, 1, 0, "下方行数", self._row_spin)
         self._add_grid_field(grid, 1, 1, "间距 (px)", self._gap_spin)
@@ -543,7 +552,7 @@ class CollageTab(QWidget):
 
         self._choose_output_btn = QPushButton("输出文件夹")
         self._choose_output_btn.clicked.connect(self._choose_output_dir)
-        self._output_path_label = self._label("未选择", "hint")
+        self._output_path_label = self._label("未选择（成品会按来源名称新建子文件夹）", "hint")
         self._output_path_label.setMinimumWidth(60)
         self._format_combo = QComboBox()
         self._format_combo.addItems(["JPEG", "PNG"])
@@ -582,6 +591,8 @@ class CollageTab(QWidget):
         for spin in (self._row_spin, self._col_spin, self._gap_spin, self._padding_spin):
             spin.valueChanged.connect(self._on_form_changed)
         self._layout_combo.currentIndexChanged.connect(self._on_layout_changed)
+        self._layout_grid_btn.clicked.connect(lambda: self._set_layout_mode("grid"))
+        self._layout_hero_btn.clicked.connect(lambda: self._set_layout_mode("hero"))
         self._aspect_combo.currentTextChanged.connect(self._on_form_changed)
         self._background_edit.textChanged.connect(self._on_background_changed)
         self._template_list.itemClicked.connect(self._on_template_item_clicked)
@@ -590,8 +601,8 @@ class CollageTab(QWidget):
         self._diversify.config_changed.connect(self._on_diversify_changed)
         self.config_changed.connect(lambda _cfg: self._refresh_state())
         self._output_count_spin.valueChanged.connect(self._on_output_count_changed)
-        self._single_mode_btn.clicked.connect(lambda: (self._set_batch_mode(False), self._choose_input_dir()))
-        self._batch_mode_btn.clicked.connect(lambda: (self._set_batch_mode(True), self._choose_input_dir()))
+        self._import_folder_btn.clicked.connect(self._choose_input_dir)
+        self._import_file_btn.clicked.connect(self._choose_files)
         self._subfolder_list.currentRowChanged.connect(self._on_subfolder_selected)
         self._auto_adapt_btn.clicked.connect(self._on_auto_adapt_clicked)
 
@@ -602,16 +613,38 @@ class CollageTab(QWidget):
         if path:
             self._set_input_dir(path)
 
-    def _choose_pptx(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择 PPT 文件", "", "PowerPoint (*.pptx *.ppt)"
+    def _choose_files(self):
+        start = self._input_dir or ""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "选择图片或 PPT 文件",
+            start,
+            "图片或 PPT (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff *.pptx *.ppt)",
         )
-        if path:
-            self._import_pptx(path)
+        if not paths:
+            return
+        ppt_paths = [p for p in paths if p.lower().endswith((".pptx", ".ppt"))]
+        image_paths = [p for p in paths if os.path.splitext(p)[1].lower() in _IMAGE_EXTS]
+        if ppt_paths:
+            self._start_ppt_imports(ppt_paths)
+        elif image_paths:
+            self._set_image_files(image_paths, "已选图片", os.path.dirname(image_paths[0]))
+
+    def _start_ppt_imports(self, ppt_paths: list[str]):
+        if self._ppt_import_worker and self._ppt_import_worker.isRunning():
+            QMessageBox.warning(self, "PPT 正在导入", "请等待当前 PPT 导入完成。")
+            return
+        self._ppt_import_queue = list(ppt_paths)
+        self._ppt_import_results = []
+        self._import_next_ppt()
+
+    def _import_next_ppt(self):
+        if not self._ppt_import_queue:
+            self._finish_ppt_imports()
+            return
+        self._import_pptx(self._ppt_import_queue.pop(0))
 
     def _import_pptx(self, pptx_path: str):
-        import shutil
-
         if self._ppt_import_worker and self._ppt_import_worker.isRunning():
             QMessageBox.warning(self, "PPT 正在导入", "请等待当前 PPT 导入完成。")
             return
@@ -630,15 +663,16 @@ class CollageTab(QWidget):
                 f"已导出过 {len(cached_pngs)} 页，是否直接使用？",
             )
             if answer == QMessageBox.StandardButton.Yes:
-                self._set_input_dir(export_dir)
+                self._ppt_import_results.append((Path(pptx_path).stem, export_dir))
+                self._import_next_ppt()
                 return
 
         if os.path.isdir(export_dir):
             shutil.rmtree(export_dir, ignore_errors=True)
         os.makedirs(export_dir, exist_ok=True)
 
-        self._choose_dir_btn.setEnabled(False)
-        self._import_ppt_btn.setEnabled(False)
+        self._import_folder_btn.setEnabled(False)
+        self._import_file_btn.setEnabled(False)
         self._ppt_import_worker = _PPTImportWorker(pptx_path, export_dir, self)
         self._ppt_import_worker.progress.connect(self._on_ppt_import_progress)
         self._ppt_import_worker.finished_ok.connect(self._on_ppt_import_done)
@@ -655,8 +689,10 @@ class CollageTab(QWidget):
         self._collage_preview_label.setText(f"📎 PPT 导入中\n\n{msg}\n\n如需授权 PowerPoint，请切换到 PowerPoint 窗口点击允许")
 
     def _on_ppt_import_done(self, export_dir: str):
-        self._set_input_dir(export_dir)
+        name = Path(export_dir).name
+        self._ppt_import_results.append((name, export_dir))
         self._restore_ppt_import_buttons()
+        self._import_next_ppt()
 
     def _on_ppt_import_failed(self, error: str):
         title, _, message = error.partition("\n")
@@ -666,8 +702,8 @@ class CollageTab(QWidget):
         self._restore_ppt_import_buttons()
 
     def _restore_ppt_import_buttons(self):
-        self._choose_dir_btn.setEnabled(True)
-        self._import_ppt_btn.setEnabled(True)
+        self._import_folder_btn.setEnabled(True)
+        self._import_file_btn.setEnabled(True)
 
     def _clear_ppt_import_worker(self, worker: _PPTImportWorker):
         if self._ppt_import_worker is worker:
@@ -676,23 +712,16 @@ class CollageTab(QWidget):
     def _set_input_dir(self, path: str):
         self._input_dir = path
         QSettings("融景", "RongJing").setValue("collage/last_input_dir", path)
-
-        if self._batch_mode:
+        subfolders = self._find_image_subfolders(path)
+        if subfolders:
+            self._batch_mode = True
             self._scan_subfolders(path)
-        else:
-            self._image_files = self._scan_image_files(path)
-            self._excluded_indices = set()
-            self._preview_collage_index = 0
-            self._input_path_label.setText(path)
-            self._input_count_label.setText(f"已扫描到 {len(self._image_files)} 张图片")
-            self._reset_output_count()
-            self._refresh_thumbnails()
-            self._refresh_state()
+            return
+        self._batch_mode = False
+        self._set_image_files(self._scan_image_files(path), Path(path).name or "图片文件夹", path)
 
     def _set_batch_mode(self, batch: bool):
         self._batch_mode = batch
-        self._single_mode_btn.setChecked(not batch)
-        self._batch_mode_btn.setChecked(batch)
         self._subfolder_list.setVisible(batch)
         if batch and self._input_dir:
             self._scan_subfolders(self._input_dir)
@@ -704,13 +733,9 @@ class CollageTab(QWidget):
         self._subfolder_list.clear()
         if not os.path.isdir(path):
             return
-        for name in sorted(os.listdir(path)):
-            sub = os.path.join(path, name)
-            if os.path.isdir(sub):
-                files = self._scan_image_files(sub)
-                if files:
-                    self._subfolder_items.append((name, files))
-                    self._subfolder_list.addItem(f"{name}  ({len(files)} 张)")
+        for name, files in self._find_image_subfolders(path):
+            self._subfolder_items.append((name, files))
+            self._subfolder_list.addItem(f"{name}  ({len(files)} 张)")
 
         total_files = sum(len(f) for _, f in self._subfolder_items)
         self._input_path_label.setText(path)
@@ -722,13 +747,7 @@ class CollageTab(QWidget):
             self._subfolder_list.setCurrentRow(0)
             self._on_subfolder_selected(0)
         elif self._scan_image_files(path):
-            answer = QMessageBox.question(
-                self, "切换模式",
-                "这个文件夹里直接就是图片，没有子文件夹。\n"
-                "要切换到「单个文件夹」模式吗？",
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                self._set_batch_mode(False)
+            self._set_batch_mode(False)
 
     def _on_subfolder_selected(self, row: int):
         if row < 0 or row >= len(self._subfolder_items):
@@ -741,12 +760,56 @@ class CollageTab(QWidget):
         self._refresh_thumbnails()
         self._refresh_state()
 
+    def _set_image_files(self, files: list[str], source_name: str, input_dir: str):
+        self._image_files = files
+        self._source_name = source_name or "拼图"
+        self._input_dir = input_dir or self._input_dir
+        self._subfolder_items = []
+        self._subfolder_list.clear()
+        self._subfolder_list.setVisible(False)
+        self._excluded_indices = set()
+        self._preview_collage_index = 0
+        self._input_path_label.setText(input_dir or self._source_name)
+        self._input_count_label.setText(f"已扫描到 {len(self._image_files)} 张图片")
+        self._reset_output_count()
+        self._refresh_thumbnails()
+        self._refresh_state()
+
+    def _finish_ppt_imports(self):
+        if not self._ppt_import_results:
+            return
+        if len(self._ppt_import_results) == 1:
+            name, export_dir = self._ppt_import_results[0]
+            self._batch_mode = False
+            self._set_image_files(self._scan_image_files(export_dir), name, export_dir)
+            return
+        items = [
+            (name, self._scan_image_files(export_dir))
+            for name, export_dir in self._ppt_import_results
+        ]
+        self._subfolder_items = [(name, files) for name, files in items if files]
+        self._batch_mode = True
+        self._image_files = []
+        self._excluded_indices = set()
+        self._subfolder_list.clear()
+        for name, files in self._subfolder_items:
+            self._subfolder_list.addItem(f"{name}  ({len(files)} 张)")
+        self._subfolder_list.setVisible(True)
+        total_files = sum(len(files) for _, files in self._subfolder_items)
+        self._input_path_label.setText("多个 PPT")
+        self._input_count_label.setText(
+            f"共 {len(self._subfolder_items)} 个 PPT，{total_files} 张图片"
+        )
+        if self._subfolder_items:
+            self._subfolder_list.setCurrentRow(0)
+            self._on_subfolder_selected(0)
+
     def _choose_output_dir(self):
         path = QFileDialog.getExistingDirectory(self, "选择输出文件夹", self._output_dir)
         if path:
             self._output_dir = path
             QSettings("融景", "RongJing").setValue("collage/last_output_dir", path)
-            self._output_path_label.setText(path)
+            self._output_path_label.setText(f"{path}（按来源名称建子文件夹）")
 
     def _restore_last_dirs(self):
         s = QSettings("融景", "RongJing")
@@ -756,7 +819,7 @@ class CollageTab(QWidget):
         last_out = s.value("collage/last_output_dir", "", type=str)
         if last_out:
             self._output_dir = last_out
-            self._output_path_label.setText(last_out)
+            self._output_path_label.setText(f"{last_out}（按来源名称建子文件夹）")
 
     # ── Scan files (recursive) ────────────────────────────────────
     def _scan_image_files(self, path: str) -> list[str]:
@@ -769,6 +832,18 @@ class CollageTab(QWidget):
                     files.append(os.path.join(root, name))
         files.sort(key=lambda p: self._natural_key(p))
         return files
+
+    def _find_image_subfolders(self, path: str) -> list[tuple[str, list[str]]]:
+        if not os.path.isdir(path):
+            return []
+        items = []
+        for name in sorted(os.listdir(path), key=self._natural_key):
+            sub = os.path.join(path, name)
+            if os.path.isdir(sub):
+                files = self._scan_image_files(sub)
+                if files:
+                    items.append((name, files))
+        return items
 
     @staticmethod
     def _natural_key(s: str):
@@ -952,7 +1027,7 @@ class CollageTab(QWidget):
         cfg = self.get_current_config()
         diversify_cfg = self._diversify.get_config()
         self._collage_runner = CollageBatchRunner(
-            self._image_files, cfg, self._output_dir,
+            self._image_files, cfg, self._output_dir_for_source(self._source_name),
             self._format_combo.currentText(),
             self._output_count_spin.value(),
             set(self._excluded_indices),
@@ -985,7 +1060,7 @@ class CollageTab(QWidget):
             return
 
         name, files = self._batch_queue.pop(0)
-        out_dir = os.path.join(self._output_dir, name)
+        out_dir = self._output_dir_for_source(name)
         cfg = self._batch_cfg
         total_cells = max(1, cfg.total_cells)
         output_count = max(1, math.ceil(len(files) / total_cells))
@@ -1001,6 +1076,15 @@ class CollageTab(QWidget):
         self._show_running_ui()
         self._collage_status.setText(f"[{self._batch_done + 1}/{self._batch_total}] {name}")
         self._collage_runner.start()
+
+    def _output_dir_for_source(self, source_name: str) -> str:
+        clean = self._safe_folder_name(source_name or "拼图")
+        return os.path.join(self._output_dir, clean)
+
+    @staticmethod
+    def _safe_folder_name(name: str) -> str:
+        cleaned = "".join("_" if ch in '/\\:*?"<>|' else ch for ch in name).strip()
+        return cleaned or "拼图"
 
     def _on_batch_item_finished(self, success: bool, msg: str):
         self._batch_done += 1
@@ -1109,6 +1193,7 @@ class CollageTab(QWidget):
         layout_blocker = QSignalBlocker(self._layout_combo)
         self._layout_combo.setCurrentIndex(max(0, self._layout_combo.findData("grid")))
         del layout_blocker
+        self._sync_layout_buttons()
         blockers = [QSignalBlocker(self._row_spin), QSignalBlocker(self._col_spin)]
         self._row_spin.setValue(rows)
         self._col_spin.setValue(cols)
@@ -1119,12 +1204,29 @@ class CollageTab(QWidget):
         self._emit_config_changed()
 
     def _on_layout_changed(self, *_args):
+        self._sync_layout_buttons()
         if self._layout_combo.currentData() == "hero" and self._row_spin.value() == 3 and self._col_spin.value() == 4:
             blockers = [QSignalBlocker(self._row_spin), QSignalBlocker(self._col_spin)]
             self._row_spin.setValue(2)
             self._col_spin.setValue(2)
             del blockers
         self._on_form_changed()
+
+    def _set_layout_mode(self, mode: str):
+        idx = self._layout_combo.findData(mode)
+        if idx >= 0 and idx != self._layout_combo.currentIndex():
+            self._layout_combo.setCurrentIndex(idx)
+        else:
+            self._on_layout_changed()
+
+    def _sync_layout_buttons(self):
+        if not hasattr(self, "_layout_grid_btn"):
+            return
+        mode = self._layout_combo.currentData()
+        blockers = [QSignalBlocker(self._layout_grid_btn), QSignalBlocker(self._layout_hero_btn)]
+        self._layout_grid_btn.setChecked(mode == "grid")
+        self._layout_hero_btn.setChecked(mode == "hero")
+        del blockers
 
     def _on_form_changed(self, *_args):
         self._current_collage = None
