@@ -26,6 +26,7 @@
 
 ## 已关闭
 
+- Windows 自动包上传到旧 Release 修复 ✅ `56a0c94ef6f42ac29b56f4e1f82a0ad128d38c13` — 验证: `gh release view v20260825-1211` 确认最新 Release 同时包含 `_arm64.dmg` 与 `_windows_x64.zip`；`git diff --check .github/workflows/build.yml AGENTS.md` 通过
 - 拼图预览切换性能优化 ✅ `18a594e9e2771b734a8edbdafaa76f91ec9cffe7` — 验证: `python3 -m py_compile ui/collage_tab.py` 与 `git diff --check` 通过；本轮按用户要求未做重打包/全量测试
 - 拼图页导入入口简化与按来源分目录导出 ✅ `9d22c84439cd05e08fc8ffbba554218383cdbd13` — 验证: `python3 -m py_compile ui/collage_tab.py` 与 `git diff --check` 通过；本轮按用户要求未做重打包/全量测试
 - 设置页数据备份/缓存清理 + 本轮 UI 路径记忆修复 ✅ `9b60999b55cbdd1dea3671498fe89d88f2556c27` — 验证: `python3 -m py_compile ui/main_window.py ui/dewatermark_tab.py` 与 `git diff --check` 通过；本轮按用户要求未做重打包/全量测试
