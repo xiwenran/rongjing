@@ -1,6 +1,8 @@
 import math
 import os
+import shutil
 import subprocess
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -169,6 +171,10 @@ class CollageTab(QWidget):
         self._ppt_import_queue: list[str] = []
         self._ppt_import_results: list[tuple[str, str]] = []
         self._cached_preview: Image.Image | None = None
+        self._preview_image_cache: OrderedDict[str, Image.Image] = OrderedDict()
+        self._preview_refresh_timer = QTimer(self)
+        self._preview_refresh_timer.setSingleShot(True)
+        self._preview_refresh_timer.timeout.connect(self._refresh_collage_preview)
         self._batch_mode = False
         self._auto_adapt_active = False
         self._subfolder_items: list[tuple[str, list[str]]] = []
@@ -752,8 +758,10 @@ class CollageTab(QWidget):
     def _on_subfolder_selected(self, row: int):
         if row < 0 or row >= len(self._subfolder_items):
             return
-        _, files = self._subfolder_items[row]
+        name, files = self._subfolder_items[row]
         self._image_files = files
+        self._source_name = name
+        self._preview_image_cache.clear()
         self._excluded_indices = set()
         self._preview_collage_index = 0
         self._reset_output_count()
@@ -764,6 +772,7 @@ class CollageTab(QWidget):
         self._image_files = files
         self._source_name = source_name or "拼图"
         self._input_dir = input_dir or self._input_dir
+        self._preview_image_cache.clear()
         self._subfolder_items = []
         self._subfolder_list.clear()
         self._subfolder_list.setVisible(False)
@@ -791,6 +800,7 @@ class CollageTab(QWidget):
         self._batch_mode = True
         self._image_files = []
         self._excluded_indices = set()
+        self._preview_image_cache.clear()
         self._subfolder_list.clear()
         for name, files in self._subfolder_items:
             self._subfolder_list.addItem(f"{name}  ({len(files)} 张)")
@@ -851,6 +861,9 @@ class CollageTab(QWidget):
         return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
 
     # ── Preview ───────────────────────────────────────────────────
+    def _schedule_collage_preview_refresh(self):
+        self._preview_refresh_timer.start(90)
+
     def _refresh_collage_preview(self):
         ranges = self._current_ranges()
         if not ranges:
@@ -867,8 +880,7 @@ class CollageTab(QWidget):
         images = []
         try:
             for p in selected[start:end]:
-                with Image.open(p) as img:
-                    images.append(img.copy())
+                images.append(self._load_preview_image(p).copy())
             cfg = self.get_current_config()
             preview = create_collage(
                 images, cfg.layout, cfg.rows, cfg.cols,
@@ -886,6 +898,19 @@ class CollageTab(QWidget):
             self._cached_preview = None
             self._collage_preview_label.setPixmap(QPixmap())
             self._collage_preview_label.setText(f"预览失败：{exc}")
+
+    def _load_preview_image(self, path: str) -> Image.Image:
+        cached = self._preview_image_cache.get(path)
+        if cached is not None:
+            self._preview_image_cache.move_to_end(path)
+            return cached
+        with Image.open(path) as img:
+            loaded = img.convert("RGB")
+            loaded.thumbnail((1600, 1600), Image.LANCZOS)
+        self._preview_image_cache[path] = loaded
+        while len(self._preview_image_cache) > 40:
+            self._preview_image_cache.popitem(last=False)
+        return loaded
 
     def _display_preview(self, img: Image.Image):
         label = self._collage_preview_label
@@ -1168,7 +1193,7 @@ class CollageTab(QWidget):
         self._preview_prev_btn.setEnabled(self._preview_collage_index > 0)
         self._preview_next_btn.setEnabled(self._preview_collage_index < len(ranges) - 1)
 
-        self._refresh_collage_preview()
+        self._schedule_collage_preview_refresh()
 
     def _reset_output_count(self):
         selected_count = len(self._selected_image_files())
@@ -1400,6 +1425,7 @@ class CollageTab(QWidget):
         spin = QSpinBox()
         spin.setRange(minimum, maximum)
         spin.setValue(value)
+        spin.setKeyboardTracking(False)
         return spin
 
     def _add_grid_field(self, grid: QGridLayout, row: int, col: int, label: str, field):
