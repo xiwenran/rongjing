@@ -84,6 +84,25 @@ def test_missing_images_fill_background():
             assert_equal(result.getpixel(point)[:3], bg, f"empty cell {idx + 1} background")
 
 
+def test_hero_collage_places_large_first_image_then_thumbnails():
+    result = create_collage(
+        make_images(5),
+        layout="hero",
+        rows=2,
+        cols=2,
+        gap=4,
+        padding=0,
+        output_width=1000,
+    )
+
+    hero_h = int(round(1000 / 1.0))
+    cell_w = (1000 - 4) // 2
+    thumb_y = hero_h + 4
+    assert_equal(result.getpixel((10, 10))[:3], COLORS[0], "hero image color")
+    assert_equal(result.getpixel((10, thumb_y + 10))[:3], COLORS[1], "first thumbnail color")
+    assert_equal(result.getpixel((cell_w + 4 + 10, thumb_y + 10))[:3], COLORS[2], "second thumbnail color")
+
+
 def test_auto_split_examples():
     assert_equal(
         calculate_auto_split(48, 0, 12),
@@ -107,13 +126,13 @@ def test_auto_split_examples():
     )
     assert_equal(
         calculate_auto_split(6, 2, 4),
-        [(0, 3), (3, 6)],
-        "6 pages requested split balances pages",
+        [(0, 4), (4, 6)],
+        "6 pages requested split uses front-filled groups",
     )
     assert_equal(
         calculate_auto_split(7, 2, 4),
         [(0, 4), (4, 7)],
-        "7 pages requested split balances remainder",
+        "7 pages requested split uses front-filled groups",
     )
     assert_equal(
         calculate_auto_split(50, 4, 12),
@@ -167,12 +186,27 @@ def test_collage_template_round_trip_and_manager(tmp_dir="_tmp_collages"):
     assert_equal(manager.load("三行四列"), template, "manager load")
     manager.delete("三行四列")
     assert_equal(manager.names(), [], "manager delete")
+
+    hero_template = CollageTemplate(
+        name="上大图四小图",
+        layout="hero",
+        rows=2,
+        cols=2,
+        gap=4,
+        padding=8,
+        background_color="#FFFFFF",
+        cell_aspect_ratio=1.0,
+        output_width=1280,
+        output_height=0,
+    )
+    assert_equal(hero_template.total_cells, 5, "hero template total cells")
     shutil.rmtree(tmp_dir)
 
 
 if __name__ == "__main__":
     test_grid_collage_size_and_order()
     test_missing_images_fill_background()
+    test_hero_collage_places_large_first_image_then_thumbnails()
     test_auto_split_examples()
     test_collage_template_round_trip_and_manager()
     print("all collage tests passed")

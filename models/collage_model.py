@@ -44,6 +44,8 @@ class CollageTemplate:
 
     @property
     def total_cells(self) -> int:
+        if self.layout == "hero":
+            return 1 + self.rows * self.cols
         return self.rows * self.cols
 
 

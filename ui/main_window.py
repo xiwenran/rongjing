@@ -784,7 +784,7 @@ class MainWindow(QMainWindow):
         fv.addWidget(tpl_frame)
         fv.addSpacing(8)
 
-        tpl_row = _row(_btn("+ 新建", self._new_template), _btn("删除", self._delete_template, "danger"))
+        tpl_row = _row(_btn("+ 新建", self._new_template), _btn("批量删除", self._delete_template, "danger"))
         fv.addLayout(tpl_row)
         fv.addSpacing(16)
         fv.addWidget(_sep())

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QInputDialog,
+    QAbstractItemView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -183,7 +184,7 @@ class CollageTab(QWidget):
         name = self._current_collage.name if self._current_collage else "未命名拼图"
         return CollageTemplate(
             name=name,
-            layout="grid",
+            layout=self._layout_combo.currentData() if hasattr(self, "_layout_combo") else "grid",
             rows=self._row_spin.value(),
             cols=self._col_spin.value(),
             gap=self._gap_spin.value(),
@@ -204,8 +205,11 @@ class CollageTab(QWidget):
             QSignalBlocker(self._padding_spin),
             QSignalBlocker(self._aspect_combo),
             QSignalBlocker(self._background_edit),
+            QSignalBlocker(self._layout_combo),
         ]
         self._current_collage = tpl
+        layout_index = max(0, self._layout_combo.findData(tpl.layout))
+        self._layout_combo.setCurrentIndex(layout_index)
         self._row_spin.setValue(tpl.rows)
         self._col_spin.setValue(tpl.cols)
         self._gap_spin.setValue(tpl.gap)
@@ -371,10 +375,14 @@ class CollageTab(QWidget):
         self._col_spin = self._spin(1, 6, 4)
         self._gap_spin = self._spin(0, 20, 4)
         self._padding_spin = self._spin(0, 40, 0)
-        self._add_grid_field(grid, 0, 0, "行数", self._row_spin)
-        self._add_grid_field(grid, 0, 1, "列数", self._col_spin)
-        self._add_grid_field(grid, 1, 0, "间距 (px)", self._gap_spin)
-        self._add_grid_field(grid, 1, 1, "边距 (px)", self._padding_spin)
+        self._layout_combo = QComboBox()
+        self._layout_combo.addItem("普通网格", "grid")
+        self._layout_combo.addItem("上大图", "hero")
+        self._add_grid_field(grid, 0, 0, "布局类型", self._layout_combo)
+        self._add_grid_field(grid, 0, 1, "下方列数", self._col_spin)
+        self._add_grid_field(grid, 1, 0, "下方行数", self._row_spin)
+        self._add_grid_field(grid, 1, 1, "间距 (px)", self._gap_spin)
+        self._add_grid_field(grid, 2, 0, "边距 (px)", self._padding_spin)
 
         self._aspect_combo = QComboBox()
         self._aspect_combo.addItems(_ASPECTS.keys())
@@ -391,8 +399,8 @@ class CollageTab(QWidget):
         bg_row.setSpacing(6)
         bg_row.addWidget(self._background_edit, 1)
         bg_row.addWidget(self._color_swatch, 0)
-        self._add_grid_field(grid, 2, 0, "单元格比例", self._aspect_combo)
-        self._add_grid_field(grid, 2, 1, "背景色", bg_row)
+        self._add_grid_field(grid, 2, 1, "单元格比例", self._aspect_combo)
+        self._add_grid_field(grid, 3, 0, "背景色", bg_row)
 
         color_presets_row = QHBoxLayout()
         color_presets_row.setSpacing(2)
@@ -409,7 +417,7 @@ class CollageTab(QWidget):
             )
             swatch.mousePressEvent = lambda event, c=hex_color: self._set_bg_color(c)
             color_presets_row.addWidget(swatch, 1)
-        grid.addLayout(color_presets_row, 3, 0, 1, 2)
+        grid.addLayout(color_presets_row, 4, 0, 1, 2)
 
         content.addLayout(grid)
         self._update_color_swatch()
@@ -448,13 +456,14 @@ class CollageTab(QWidget):
         self._template_list = QListWidget()
         self._template_list.setMinimumHeight(80)
         self._template_list.setMaximumHeight(150)
+        self._template_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         frame_layout.addWidget(self._template_list)
         content.addWidget(tpl_frame)
 
         row = QHBoxLayout()
         row.setSpacing(8)
         self._save_template_btn = QPushButton("保存模板")
-        self._delete_template_btn = QPushButton("删除")
+        self._delete_template_btn = QPushButton("批量删除")
         self._delete_template_btn.setObjectName("danger")
         row.addWidget(self._save_template_btn)
         row.addWidget(self._delete_template_btn)
@@ -572,6 +581,7 @@ class CollageTab(QWidget):
             btn.clicked.connect(lambda checked=False, n=name: self._on_preset_clicked(n))
         for spin in (self._row_spin, self._col_spin, self._gap_spin, self._padding_spin):
             spin.valueChanged.connect(self._on_form_changed)
+        self._layout_combo.currentIndexChanged.connect(self._on_layout_changed)
         self._aspect_combo.currentTextChanged.connect(self._on_form_changed)
         self._background_edit.textChanged.connect(self._on_background_changed)
         self._template_list.itemClicked.connect(self._on_template_item_clicked)
@@ -1096,6 +1106,9 @@ class CollageTab(QWidget):
     # ── Behaviors ─────────────────────────────────────────────────
     def _on_preset_clicked(self, name: str):
         rows, cols = (int(part) for part in name.split("×", 1))
+        layout_blocker = QSignalBlocker(self._layout_combo)
+        self._layout_combo.setCurrentIndex(max(0, self._layout_combo.findData("grid")))
+        del layout_blocker
         blockers = [QSignalBlocker(self._row_spin), QSignalBlocker(self._col_spin)]
         self._row_spin.setValue(rows)
         self._col_spin.setValue(cols)
@@ -1104,6 +1117,14 @@ class CollageTab(QWidget):
         self._refresh_preset_state()
         self._refresh_mini_preview()
         self._emit_config_changed()
+
+    def _on_layout_changed(self, *_args):
+        if self._layout_combo.currentData() == "hero" and self._row_spin.value() == 3 and self._col_spin.value() == 4:
+            blockers = [QSignalBlocker(self._row_spin), QSignalBlocker(self._col_spin)]
+            self._row_spin.setValue(2)
+            self._col_spin.setValue(2)
+            del blockers
+        self._on_form_changed()
 
     def _on_form_changed(self, *_args):
         self._current_collage = None
@@ -1152,14 +1173,22 @@ class CollageTab(QWidget):
         self._load_template_list(select_name=name)
 
     def _delete_selected_template(self):
-        item = self._template_list.currentItem()
-        if item is None:
+        items = self._template_list.selectedItems()
+        if not items:
             return
-        name = item.text()
-        if QMessageBox.question(self, "删除模板", f"确定删除「{name}」？") != QMessageBox.StandardButton.Yes:
+        names = [item.text() for item in items]
+        if len(names) == 1:
+            prompt = f"确定删除「{names[0]}」？"
+        else:
+            listing = "\n".join(f"- {name}" for name in names[:12])
+            if len(names) > 12:
+                listing += f"\n... 另有 {len(names) - 12} 个"
+            prompt = f"确定删除以下 {len(names)} 个拼图模板？\n\n{listing}"
+        if QMessageBox.question(self, "删除模板", prompt) != QMessageBox.StandardButton.Yes:
             return
-        self._mgr.delete(name)
-        if self._current_collage and self._current_collage.name == name:
+        for name in names:
+            self._mgr.delete(name)
+        if self._current_collage and self._current_collage.name in names:
             self._current_collage = None
         self._load_template_list()
 
@@ -1189,7 +1218,7 @@ class CollageTab(QWidget):
         current = f"{self._row_spin.value()}×{self._col_spin.value()}"
         matched_preset = False
         for name, btn in self._preset_buttons.items():
-            is_match = name == current
+            is_match = self._layout_combo.currentData() == "grid" and name == current
             btn.setChecked(is_match)
             if is_match:
                 matched_preset = True
@@ -1205,14 +1234,26 @@ class CollageTab(QWidget):
                 w.deleteLater()
         rows = self._row_spin.value()
         cols = self._col_spin.value()
-        total = rows * cols
-        self._mini_preview_label.setText(f"布局预览  {rows}×{cols} = {total} 张/页")
-        for index in range(total):
+        is_hero = self._layout_combo.currentData() == "hero"
+        total = 1 + rows * cols if is_hero else rows * cols
+        if is_hero:
+            self._mini_preview_label.setText(f"布局预览  上方大图 + 下方 {rows}×{cols} = {total} 张/页")
+            hero = QLabel("大图")
+            hero.setObjectName("mini_cell")
+            hero.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hero.setMinimumHeight(34)
+            self._mini_grid.addWidget(hero, 0, 0, 1, cols)
+        else:
+            self._mini_preview_label.setText(f"布局预览  {rows}×{cols} = {total} 张/页")
+        start_row = 1 if is_hero else 0
+        for index in range(rows * cols):
             cell = QLabel(str(index + 1))
             cell.setObjectName("mini_cell")
             cell.setAlignment(Qt.AlignmentFlag.AlignCenter)
             cell.setMinimumHeight(26)
-            self._mini_grid.addWidget(cell, index // cols, index % cols)
+            label = str(index + 2) if is_hero else str(index + 1)
+            cell.setText(label)
+            self._mini_grid.addWidget(cell, start_row + index // cols, index % cols)
 
     def _current_aspect_ratio(self) -> float:
         return _ASPECTS.get(self._aspect_combo.currentText(), 0)

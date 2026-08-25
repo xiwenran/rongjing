@@ -5,8 +5,8 @@ from PIL import Image, ImageColor
 
 
 def _validate_collage_args(layout: str, rows: int, cols: int, gap: int, padding: int) -> None:
-    if layout not in ("grid", "horizontal", "vertical"):
-        raise ValueError("layout must be 'grid', 'horizontal', or 'vertical'")
+    if layout not in ("grid", "horizontal", "vertical", "hero"):
+        raise ValueError("layout must be 'grid', 'horizontal', 'vertical', or 'hero'")
     if rows < 1 or rows > 4:
         raise ValueError("rows must be between 1 and 4")
     if cols < 1 or cols > 6:
@@ -63,7 +63,39 @@ def create_collage(
     if aspect_ratio <= 0:
         raise ValueError("cell_aspect_ratio must be > 0 when provided")
 
-    inner_w = output_width - padding * 2 - gap * (cols - 1)
+    inner_w = output_width - padding * 2
+    if layout == "hero":
+        thumb_grid_w = inner_w - gap * (cols - 1)
+        cell_w = thumb_grid_w // cols
+        hero_w = inner_w
+
+        if output_height == 0:
+            hero_h = max(1, int(round(hero_w / aspect_ratio)))
+            cell_h = max(1, int(round(cell_w / aspect_ratio)))
+            output_height = padding * 2 + hero_h + gap + rows * cell_h + gap * (rows - 1)
+        else:
+            if output_height <= padding * 2 + gap * rows:
+                raise ValueError("output_height is too small for the requested collage")
+            available_h = output_height - padding * 2 - gap - gap * (rows - 1)
+            hero_h = max(1, int(round(available_h * 0.58)))
+            cell_h = max(1, (available_h - hero_h) // rows)
+
+        result = Image.new("RGB", (output_width, output_height), bg)
+        if images:
+            result.paste(_resize_center_crop(images[0], (hero_w, hero_h)), (padding, padding))
+
+        thumb_y = padding + hero_h + gap
+        total_thumbs = rows * cols
+        for idx, img in enumerate(images[1:1 + total_thumbs]):
+            row = idx // cols
+            col = idx % cols
+            x = padding + col * (cell_w + gap)
+            y = thumb_y + row * (cell_h + gap)
+            result.paste(_resize_center_crop(img, (cell_w, cell_h)), (x, y))
+
+        return result
+
+    inner_w -= gap * (cols - 1)
     cell_w = inner_w // cols
 
     if output_height == 0:

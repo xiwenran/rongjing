@@ -21,11 +21,16 @@ def main():
         tab = CollageTab(collages_dir=collages_dir)
         cfg = tab.get_current_config()
         assert cfg.rows == 3 and cfg.cols == 4
+        tab._layout_combo.setCurrentIndex(tab._layout_combo.findData("hero"))
+        cfg = tab.get_current_config()
+        assert cfg.layout == "hero" and cfg.rows == 2 and cfg.cols == 2 and cfg.total_cells == 5
         tab._set_input_dir(input_dir)
         assert len(tab._image_files) == 12
         tab._toggle_excluded(2)
         assert 2 in tab._excluded_indices
-        tab._set_output_dir(output_dir)
+        tab._output_dir = output_dir
+        tab._output_path_label.setText(output_dir)
+        tab._format_combo.setCurrentText("PNG")
         finished_args = []
 
         def on_finished(success, msg):
@@ -41,7 +46,7 @@ def main():
         assert len(finished_args) == 1, f"finished 应触发 1 次，实际 {len(finished_args)}"
         assert finished_args[0][0] is True, f"finished 应为 success=True，实际 {finished_args[0]}"
         outputs = [f for f in os.listdir(output_dir) if f.endswith(".png")]
-        assert len(outputs) >= 1, f"应有至少 1 张输出，实际 {outputs}"
+        assert len(outputs) == 3, f"hero 布局应按 5 页一组生成 3 张，实际 {outputs}"
     print("All collage tab end-to-end tests passed.")
 
 
