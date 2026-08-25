@@ -178,6 +178,8 @@ class CollageTab(QWidget):
         self._batch_mode = False
         self._auto_adapt_active = False
         self._subfolder_items: list[tuple[str, list[str]]] = []
+        self._source_states: dict[str, dict] = {}
+        self._active_source_key = ""
 
         self._app_data_dir = str(Path(collages_dir).parent)
 
@@ -235,6 +237,7 @@ class CollageTab(QWidget):
         self._refresh_mini_preview()
         del blockers
         self._suppress_emit = False
+        self._save_current_source_state()
         self._refresh_state()
 
     def get_diversify_config(self):
@@ -562,10 +565,15 @@ class CollageTab(QWidget):
         self._output_path_label.setMinimumWidth(60)
         self._format_combo = QComboBox()
         self._format_combo.addItems(["JPEG", "PNG"])
-        self._run_collage_btn = QPushButton("开始拼图")
+        self._run_collage_btn = QPushButton("开始导出")
         self._run_collage_btn.setObjectName("primary")
         self._run_collage_btn.setMinimumHeight(40)
         self._run_collage_btn.clicked.connect(self._run_collage_batch)
+        self._run_all_collage_btn = QPushButton("导出全部")
+        self._run_all_collage_btn.setObjectName("primary")
+        self._run_all_collage_btn.setMinimumHeight(40)
+        self._run_all_collage_btn.setVisible(False)
+        self._run_all_collage_btn.clicked.connect(self._run_all_collage_batch)
         self._cancel_collage_btn = QPushButton("取消")
         self._cancel_collage_btn.setVisible(False)
         self._cancel_collage_btn.clicked.connect(self._abort_collage_batch)
@@ -574,6 +582,7 @@ class CollageTab(QWidget):
         layout.addWidget(self._output_path_label, 1)
         layout.addWidget(self._format_combo, 0)
         layout.addWidget(self._run_collage_btn, 0)
+        layout.addWidget(self._run_all_collage_btn, 0)
         layout.addWidget(self._cancel_collage_btn, 0)
 
         self._collage_progress = QProgressBar()
@@ -735,6 +744,9 @@ class CollageTab(QWidget):
             self._set_input_dir(self._input_dir)
 
     def _scan_subfolders(self, path: str):
+        self._save_current_source_state()
+        self._source_states = {}
+        self._active_source_key = ""
         self._subfolder_items = []
         self._subfolder_list.clear()
         if not os.path.isdir(path):
@@ -758,35 +770,38 @@ class CollageTab(QWidget):
     def _on_subfolder_selected(self, row: int):
         if row < 0 or row >= len(self._subfolder_items):
             return
+        self._save_current_source_state()
         name, files = self._subfolder_items[row]
         self._image_files = files
         self._source_name = name
         self._preview_image_cache.clear()
-        self._excluded_indices = set()
-        self._preview_collage_index = 0
-        self._reset_output_count()
+        self._restore_source_state(name, files)
         self._refresh_thumbnails()
         self._refresh_state()
 
     def _set_image_files(self, files: list[str], source_name: str, input_dir: str):
+        self._save_current_source_state()
         self._image_files = files
         self._source_name = source_name or "拼图"
         self._input_dir = input_dir or self._input_dir
         self._preview_image_cache.clear()
+        self._source_states = {}
+        self._active_source_key = ""
         self._subfolder_items = []
         self._subfolder_list.clear()
         self._subfolder_list.setVisible(False)
-        self._excluded_indices = set()
-        self._preview_collage_index = 0
         self._input_path_label.setText(input_dir or self._source_name)
         self._input_count_label.setText(f"已扫描到 {len(self._image_files)} 张图片")
-        self._reset_output_count()
+        self._restore_source_state(self._source_name, self._image_files)
         self._refresh_thumbnails()
         self._refresh_state()
 
     def _finish_ppt_imports(self):
         if not self._ppt_import_results:
             return
+        self._save_current_source_state()
+        self._source_states = {}
+        self._active_source_key = ""
         if len(self._ppt_import_results) == 1:
             name, export_dir = self._ppt_import_results[0]
             self._batch_mode = False
@@ -946,6 +961,7 @@ class CollageTab(QWidget):
         new_idx = self._preview_collage_index + delta
         if 0 <= new_idx < len(ranges):
             self._preview_collage_index = new_idx
+            self._save_current_source_state()
             self._refresh_state()
 
     def _on_preview_mouse_move(self, event):
@@ -1031,6 +1047,7 @@ class CollageTab(QWidget):
             self._excluded_indices.remove(index)
         else:
             self._excluded_indices.add(index)
+        self._save_current_source_state()
         self._refresh_thumbnails()
         self._refresh_state()
 
@@ -1040,10 +1057,13 @@ class CollageTab(QWidget):
             QMessageBox.warning(self, "提示", "请先选择输出文件夹")
             return
 
-        if self._batch_mode:
-            self._run_batch_multi_folder(callback)
-        else:
-            self._run_batch_single(callback)
+        self._run_batch_single(callback)
+
+    def _run_all_collage_batch(self, callback=None):
+        if not self._output_dir:
+            QMessageBox.warning(self, "提示", "请先选择输出文件夹")
+            return
+        self._run_batch_multi_folder(callback)
 
     def _run_batch_single(self, callback=None):
         if not self._image_files:
@@ -1065,35 +1085,41 @@ class CollageTab(QWidget):
             QMessageBox.warning(self, "提示", "未找到包含图片的子文件夹")
             return
 
+        self._save_current_source_state()
         cfg = self.get_current_config()
         diversify_cfg = self._diversify.get_config()
-        total_cells = max(1, cfg.total_cells)
 
         self._batch_queue = list(self._subfolder_items)
         self._batch_done = 0
         self._batch_total = len(self._batch_queue)
         self._batch_callback = callback
-        self._batch_cfg = cfg
+        self._batch_default_cfg = cfg
         self._batch_diversify_cfg = diversify_cfg
         self._run_next_in_queue()
 
     def _run_next_in_queue(self):
         if not self._batch_queue:
-            self._on_collage_finished(True, f"全部完成！共处理 {self._batch_total} 个文件夹")
+            self._on_collage_finished(True, f"全部导出完成，共处理 {self._batch_total} 份来源。")
             if self._batch_callback:
                 self._batch_callback(True, "")
             return
 
         name, files = self._batch_queue.pop(0)
         out_dir = self._output_dir_for_source(name)
-        cfg = self._batch_cfg
+        state = self._source_states.get(self._source_key(name, files))
+        cfg = self._config_from_state(state, self._batch_default_cfg)
+        excluded = self._excluded_from_state(state, len(files))
+        selected_count = max(0, len(files) - len(excluded))
         total_cells = max(1, cfg.total_cells)
-        output_count = max(1, math.ceil(len(files) / total_cells))
+        output_count = int(state.get("output_count", 0)) if state else 0
+        if output_count <= 0:
+            output_count = max(1, math.ceil(selected_count / total_cells)) if selected_count else 1
+        output_count = min(max(1, output_count), max(1, selected_count))
 
         self._collage_runner = CollageBatchRunner(
             files, cfg, out_dir,
             self._format_combo.currentText(),
-            output_count, set(),
+            output_count, excluded,
             self._batch_diversify_cfg, self,
         )
         self._collage_runner.progress.connect(self._on_collage_progress)
@@ -1128,6 +1154,7 @@ class CollageTab(QWidget):
 
     def _show_running_ui(self):
         self._run_collage_btn.setVisible(False)
+        self._run_all_collage_btn.setVisible(False)
         self._cancel_collage_btn.setVisible(True)
         self._collage_progress.setVisible(True)
         self._collage_status.setVisible(True)
@@ -1145,7 +1172,7 @@ class CollageTab(QWidget):
         self._collage_status.setText(f"[{done}/{total}] {msg}")
 
     def _on_collage_finished(self, success: bool, msg: str):
-        self._run_collage_btn.setVisible(True)
+        self._refresh_export_buttons()
         self._cancel_collage_btn.setVisible(False)
         self._collage_status.setText(msg)
         if os.environ.get("QT_QPA_PLATFORM") != "offscreen":
@@ -1171,6 +1198,8 @@ class CollageTab(QWidget):
         self._current_collage = None
         self._refresh_preset_state()
         self._refresh_mini_preview()
+        self._save_current_source_state()
+        self._refresh_state()
         self._emit_config_changed()
 
     # ── State refresh ─────────────────────────────────────────────
@@ -1189,18 +1218,33 @@ class CollageTab(QWidget):
         pages_per = max((end - start for start, end in ranges), default=0)
         self._selected_pages_label.setText(f"已选 {selected_count}/{total} 页")
         self._pages_per_label.setText(f"张，每张 {pages_per} 页")
-        self._run_collage_btn.setText(f"开始拼图（{len(ranges)} 张）")
         self._preview_prev_btn.setEnabled(self._preview_collage_index > 0)
         self._preview_next_btn.setEnabled(self._preview_collage_index < len(ranges) - 1)
+        self._refresh_export_buttons(len(ranges))
 
         self._schedule_collage_preview_refresh()
+
+    def _refresh_export_buttons(self, output_count: int | None = None):
+        if not hasattr(self, "_run_all_collage_btn"):
+            return
+        if output_count is None:
+            output_count = len(self._current_ranges())
+        has_many_sources = self._batch_mode and len(self._subfolder_items) > 1
+        self._run_collage_btn.setVisible(True)
+        self._run_collage_btn.setText(
+            f"导出当前（{output_count} 张）" if has_many_sources else f"开始导出（{output_count} 张）"
+        )
+        self._run_all_collage_btn.setVisible(has_many_sources)
+        self._run_all_collage_btn.setText(f"导出全部（{len(self._subfolder_items)} 份）")
 
     def _reset_output_count(self):
         selected_count = len(self._selected_image_files())
         cells = max(1, self.get_current_config().total_cells)
         value = max(1, math.ceil(selected_count / cells)) if selected_count else 1
+        blocker = QSignalBlocker(self._output_count_spin)
         self._output_count_spin.setMaximum(max(1, selected_count))
         self._output_count_spin.setValue(value)
+        del blocker
 
     def _selected_image_files(self) -> list[str]:
         return [p for i, p in enumerate(self._image_files) if i not in self._excluded_indices]
@@ -1226,6 +1270,8 @@ class CollageTab(QWidget):
         self._auto_adapt_active = False
         self._refresh_preset_state()
         self._refresh_mini_preview()
+        self._save_current_source_state()
+        self._refresh_state()
         self._emit_config_changed()
 
     def _on_layout_changed(self, *_args):
@@ -1258,15 +1304,20 @@ class CollageTab(QWidget):
         self._auto_adapt_active = False
         self._refresh_preset_state()
         self._refresh_mini_preview()
+        self._save_current_source_state()
+        self._refresh_state()
         self._emit_config_changed()
 
     def _on_background_changed(self, *_args):
         self._current_collage = None
         self._update_color_swatch()
         self._remember_background_color()
+        self._save_current_source_state()
+        self._refresh_state()
         self._emit_config_changed()
 
     def _on_output_count_changed(self, *_args):
+        self._save_current_source_state()
         self._refresh_state()
 
     def _on_template_item_clicked(self, item: QListWidgetItem):
@@ -1332,6 +1383,103 @@ class CollageTab(QWidget):
             self.config_changed.emit(self.get_current_config())
 
     # ── Helpers ───────────────────────────────────────────────────
+    def _source_key(self, name: str, files: list[str]) -> str:
+        first = files[0] if files else ""
+        return f"{name}\n{first}\n{len(files)}"
+
+    def _save_current_source_state(self):
+        if not self._active_source_key or not self._image_files or self._suppress_emit:
+            return
+        cfg = self.get_current_config()
+        self._source_states[self._active_source_key] = {
+            "layout": cfg.layout,
+            "rows": cfg.rows,
+            "cols": cfg.cols,
+            "gap": cfg.gap,
+            "padding": cfg.padding,
+            "background_color": cfg.background_color,
+            "cell_aspect_ratio": cfg.cell_aspect_ratio,
+            "output_count": self._output_count_spin.value(),
+            "excluded_indices": sorted(self._excluded_indices),
+            "preview_collage_index": self._preview_collage_index,
+        }
+
+    def _restore_source_state(self, name: str, files: list[str]):
+        key = self._source_key(name, files)
+        self._active_source_key = key
+        state = self._source_states.get(key)
+        if not state:
+            self._excluded_indices = set()
+            self._preview_collage_index = 0
+            self._reset_output_count()
+            return
+
+        self._suppress_emit = True
+        blockers = [
+            QSignalBlocker(self._layout_combo),
+            QSignalBlocker(self._row_spin),
+            QSignalBlocker(self._col_spin),
+            QSignalBlocker(self._gap_spin),
+            QSignalBlocker(self._padding_spin),
+            QSignalBlocker(self._aspect_combo),
+            QSignalBlocker(self._background_edit),
+            QSignalBlocker(self._output_count_spin),
+        ]
+        layout_index = max(0, self._layout_combo.findData(state.get("layout", "grid")))
+        self._layout_combo.setCurrentIndex(layout_index)
+        self._row_spin.setValue(int(state.get("rows", self._row_spin.value())))
+        self._col_spin.setValue(int(state.get("cols", self._col_spin.value())))
+        self._gap_spin.setValue(int(state.get("gap", self._gap_spin.value())))
+        self._padding_spin.setValue(int(state.get("padding", self._padding_spin.value())))
+        self._background_edit.setText(str(state.get("background_color", "#FFFFFF")))
+        self._aspect_combo.setCurrentText(
+            self._aspect_label_for(float(state.get("cell_aspect_ratio", 0)))
+        )
+        excluded = self._excluded_from_state(state, len(files))
+        selected_count = len(files) - len(excluded)
+        self._output_count_spin.setMaximum(max(1, selected_count))
+        self._output_count_spin.setValue(
+            min(max(1, int(state.get("output_count", 1))), max(1, selected_count))
+        )
+        del blockers
+        self._suppress_emit = False
+
+        self._current_collage = None
+        self._auto_adapt_active = False
+        self._excluded_indices = excluded
+        self._preview_collage_index = max(0, int(state.get("preview_collage_index", 0)))
+        self._update_color_swatch()
+        self._sync_layout_buttons()
+        self._refresh_preset_state()
+        self._refresh_mini_preview()
+
+    def _config_from_state(
+        self, state: dict | None, default: CollageTemplate
+    ) -> CollageTemplate:
+        if not state:
+            return default
+        return CollageTemplate(
+            name=default.name,
+            layout=str(state.get("layout", default.layout)),
+            rows=int(state.get("rows", default.rows)),
+            cols=int(state.get("cols", default.cols)),
+            gap=int(state.get("gap", default.gap)),
+            padding=int(state.get("padding", default.padding)),
+            background_color=str(state.get("background_color", default.background_color)),
+            cell_aspect_ratio=float(state.get("cell_aspect_ratio", default.cell_aspect_ratio)),
+            output_width=default.output_width,
+            output_height=default.output_height,
+            output_count=int(state.get("output_count", default.output_count)),
+        )
+
+    def _excluded_from_state(self, state: dict | None, total: int) -> set[int]:
+        if not state:
+            return set()
+        return {
+            int(i) for i in state.get("excluded_indices", [])
+            if isinstance(i, int) and 0 <= i < total
+        }
+
     def _load_template_list(self, select_name: str | None = None):
         self._template_list.clear()
         for tpl in self._mgr.load_all():
