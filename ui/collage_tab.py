@@ -1,3 +1,4 @@
+import hashlib
 import math
 import os
 import shutil
@@ -168,6 +169,7 @@ class CollageTab(QWidget):
         self._preview_collage_index = 0
         self._collage_runner: CollageBatchRunner | None = None
         self._ppt_import_worker: _PPTImportWorker | None = None
+        self._ppt_import_current_name = ""
         self._ppt_import_queue: list[str] = []
         self._ppt_import_results: list[tuple[str, str]] = []
         self._cached_preview: Image.Image | None = None
@@ -651,6 +653,7 @@ class CollageTab(QWidget):
             return
         self._ppt_import_queue = list(ppt_paths)
         self._ppt_import_results = []
+        self._ppt_import_current_name = ""
         self._import_next_ppt()
 
     def _import_next_ppt(self):
@@ -664,7 +667,9 @@ class CollageTab(QWidget):
             QMessageBox.warning(self, "PPT 正在导入", "请等待当前 PPT 导入完成。")
             return
 
-        export_dir = os.path.join(self._app_data_dir, "ppt_export", Path(pptx_path).stem)
+        display_name = self._unique_import_name(Path(pptx_path).stem)
+        self._ppt_import_current_name = display_name
+        export_dir = self._ppt_export_dir(pptx_path)
         cached_pngs = []
         if os.path.isdir(export_dir):
             cached_pngs = [
@@ -678,7 +683,7 @@ class CollageTab(QWidget):
                 f"已导出过 {len(cached_pngs)} 页，是否直接使用？",
             )
             if answer == QMessageBox.StandardButton.Yes:
-                self._ppt_import_results.append((Path(pptx_path).stem, export_dir))
+                self._ppt_import_results.append((display_name, export_dir))
                 self._import_next_ppt()
                 return
 
@@ -704,8 +709,9 @@ class CollageTab(QWidget):
         self._collage_preview_label.setText(f"📎 PPT 导入中\n\n{msg}\n\n如需授权 PowerPoint，请切换到 PowerPoint 窗口点击允许")
 
     def _on_ppt_import_done(self, export_dir: str):
-        name = Path(export_dir).name
+        name = self._ppt_import_current_name or Path(export_dir).name
         self._ppt_import_results.append((name, export_dir))
+        self._ppt_import_current_name = ""
         self._restore_ppt_import_buttons()
         self._import_next_ppt()
 
@@ -714,6 +720,7 @@ class CollageTab(QWidget):
         QMessageBox.warning(self, title or "PPT 导入失败", message or error)
         self._input_path_label.setText(title or "PPT 导入失败")
         self._collage_preview_label.setText("选择文件夹或拖入 PPT 开始预览")
+        self._ppt_import_current_name = ""
         self._restore_ppt_import_buttons()
 
     def _restore_ppt_import_buttons(self):
@@ -1089,11 +1096,13 @@ class CollageTab(QWidget):
         cfg = self.get_current_config()
         diversify_cfg = self._diversify.get_config()
 
-        self._batch_queue = list(self._subfolder_items)
+        self._batch_queue = [
+            self._build_source_run_item(name, files, cfg)
+            for name, files in self._subfolder_items
+        ]
         self._batch_done = 0
         self._batch_total = len(self._batch_queue)
         self._batch_callback = callback
-        self._batch_default_cfg = cfg
         self._batch_diversify_cfg = diversify_cfg
         self._run_next_in_queue()
 
@@ -1104,17 +1113,8 @@ class CollageTab(QWidget):
                 self._batch_callback(True, "")
             return
 
-        name, files = self._batch_queue.pop(0)
+        name, files, cfg, output_count, excluded = self._batch_queue.pop(0)
         out_dir = self._output_dir_for_source(name)
-        state = self._source_states.get(self._source_key(name, files))
-        cfg = self._config_from_state(state, self._batch_default_cfg)
-        excluded = self._excluded_from_state(state, len(files))
-        selected_count = max(0, len(files) - len(excluded))
-        total_cells = max(1, cfg.total_cells)
-        output_count = int(state.get("output_count", 0)) if state else 0
-        if output_count <= 0:
-            output_count = max(1, math.ceil(selected_count / total_cells)) if selected_count else 1
-        output_count = min(max(1, output_count), max(1, selected_count))
 
         self._collage_runner = CollageBatchRunner(
             files, cfg, out_dir,
@@ -1127,6 +1127,18 @@ class CollageTab(QWidget):
         self._show_running_ui()
         self._collage_status.setText(f"[{self._batch_done + 1}/{self._batch_total}] {name}")
         self._collage_runner.start()
+
+    def _build_source_run_item(
+        self, name: str, files: list[str], default_cfg: CollageTemplate
+    ):
+        state = self._source_states.get(self._source_key(name, files))
+        cfg = self._config_from_state(state, default_cfg)
+        excluded = self._excluded_from_state(state, len(files))
+        selected_count = max(0, len(files) - len(excluded))
+        min_outputs = max(1, math.ceil(selected_count / max(1, cfg.total_cells))) if selected_count else 1
+        output_count = int(state.get("output_count", 0)) if state else 0
+        output_count = min(max(min_outputs, output_count), max(1, selected_count))
+        return name, list(files), cfg, output_count, set(excluded)
 
     def _output_dir_for_source(self, source_name: str) -> str:
         clean = self._safe_folder_name(source_name or "拼图")
@@ -1210,10 +1222,17 @@ class CollageTab(QWidget):
         total = len(self._image_files)
         selected_count = len(selected)
         max_outputs = max(1, selected_count)
+        min_outputs = self._minimum_output_count(selected_count)
+        blocker = QSignalBlocker(self._output_count_spin)
+        if self._output_count_spin.minimum() != min_outputs:
+            self._output_count_spin.setMinimum(min_outputs)
         if self._output_count_spin.maximum() != max_outputs:
             self._output_count_spin.setMaximum(max_outputs)
         if self._output_count_spin.value() > max_outputs:
             self._output_count_spin.setValue(max_outputs)
+        if self._output_count_spin.value() < min_outputs:
+            self._output_count_spin.setValue(min_outputs)
+        del blocker
         ranges = self._current_ranges()
         pages_per = max((end - start for start, end in ranges), default=0)
         self._selected_pages_label.setText(f"已选 {selected_count}/{total} 页")
@@ -1239,10 +1258,9 @@ class CollageTab(QWidget):
 
     def _reset_output_count(self):
         selected_count = len(self._selected_image_files())
-        cells = max(1, self.get_current_config().total_cells)
-        value = max(1, math.ceil(selected_count / cells)) if selected_count else 1
+        value = self._minimum_output_count(selected_count)
         blocker = QSignalBlocker(self._output_count_spin)
-        self._output_count_spin.setMaximum(max(1, selected_count))
+        self._output_count_spin.setRange(value, max(1, selected_count))
         self._output_count_spin.setValue(value)
         del blocker
 
@@ -1256,6 +1274,18 @@ class CollageTab(QWidget):
             max(1, self.get_current_config().total_cells),
         )
 
+    def _minimum_output_count(self, selected_count: int) -> int:
+        if selected_count <= 0:
+            return 1
+        cells = max(1, self.get_current_config().total_cells)
+        return max(1, math.ceil(selected_count / cells))
+
+    def _minimum_output_count_for_state(self, state: dict | None, selected_count: int) -> int:
+        if selected_count <= 0:
+            return 1
+        cfg = self._config_from_state(state, self.get_current_config())
+        return max(1, math.ceil(selected_count / max(1, cfg.total_cells)))
+
     # ── Behaviors ─────────────────────────────────────────────────
     def _on_preset_clicked(self, name: str):
         rows, cols = (int(part) for part in name.split("×", 1))
@@ -1268,6 +1298,7 @@ class CollageTab(QWidget):
         self._col_spin.setValue(cols)
         del blockers
         self._auto_adapt_active = False
+        self._reset_output_count()
         self._refresh_preset_state()
         self._refresh_mini_preview()
         self._save_current_source_state()
@@ -1281,6 +1312,7 @@ class CollageTab(QWidget):
             self._row_spin.setValue(2)
             self._col_spin.setValue(2)
             del blockers
+        self._reset_output_count()
         self._on_form_changed()
 
     def _set_layout_mode(self, mode: str):
@@ -1302,6 +1334,8 @@ class CollageTab(QWidget):
     def _on_form_changed(self, *_args):
         self._current_collage = None
         self._auto_adapt_active = False
+        if self.sender() in (self._row_spin, self._col_spin):
+            self._reset_output_count()
         self._refresh_preset_state()
         self._refresh_mini_preview()
         self._save_current_source_state()
@@ -1387,6 +1421,19 @@ class CollageTab(QWidget):
         first = files[0] if files else ""
         return f"{name}\n{first}\n{len(files)}"
 
+    def _ppt_export_dir(self, pptx_path: str) -> str:
+        digest = hashlib.sha1(os.path.abspath(pptx_path).encode("utf-8")).hexdigest()[:10]
+        return os.path.join(self._app_data_dir, "ppt_export", f"{Path(pptx_path).stem}-{digest}")
+
+    def _unique_import_name(self, base_name: str) -> str:
+        used = {name for name, _files in self._ppt_import_results}
+        if base_name not in used:
+            return base_name
+        counter = 2
+        while f"{base_name} {counter}" in used:
+            counter += 1
+        return f"{base_name} {counter}"
+
     def _save_current_source_state(self):
         if not self._active_source_key or not self._image_files or self._suppress_emit:
             return
@@ -1437,9 +1484,10 @@ class CollageTab(QWidget):
         )
         excluded = self._excluded_from_state(state, len(files))
         selected_count = len(files) - len(excluded)
-        self._output_count_spin.setMaximum(max(1, selected_count))
+        min_outputs = self._minimum_output_count_for_state(state, selected_count)
+        self._output_count_spin.setRange(min_outputs, max(1, selected_count))
         self._output_count_spin.setValue(
-            min(max(1, int(state.get("output_count", 1))), max(1, selected_count))
+            min(max(min_outputs, int(state.get("output_count", 1))), max(1, selected_count))
         )
         del blockers
         self._suppress_emit = False
