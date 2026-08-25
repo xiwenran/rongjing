@@ -56,17 +56,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 优先读取同步脚本提交的 RELEASE_TAG 文件，精确定位 Release
-          $tag = $null
+          # 优先附加到最新 Release；RELEASE_TAG 只做兜底，避免旧文件把 Windows 包传回旧版本。
+          $tag = gh release list --repo xiwenran/rongjing --limit 1 --json tagName --jq '.[0].tagName' 2>$null
+          Write-Host "从 gh release list 读取最新 tag: $tag"
           $tagFile = "RELEASE_TAG"
-          if (Test-Path $tagFile) {
+          if (-not $tag -and (Test-Path $tagFile)) {
             $tag = (Get-Content $tagFile -Raw).Trim()
-            Write-Host "从 RELEASE_TAG 文件读取 tag: $tag"
-          }
-          # 兜底：查找最新 Release
-          if (-not $tag) {
-            $tag = gh release list --repo xiwenran/rongjing --limit 1 --json tagName --jq '.[0].tagName' 2>$null
-            Write-Host "从 gh release list 读取 tag: $tag"
+            Write-Host "从 RELEASE_TAG 文件兜底读取 tag: $tag"
           }
           if ($tag) {
             gh release upload $tag "dist\融景_windows_x64.zip" --repo xiwenran/rongjing --clobber
