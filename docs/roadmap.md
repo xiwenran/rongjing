@@ -26,6 +26,7 @@
 
 ## 已关闭
 
+- 设置页数据备份/缓存清理 + 本轮 UI 路径记忆修复 ✅ `9b60999b55cbdd1dea3671498fe89d88f2556c27` — 验证: `python3 -m py_compile ui/main_window.py ui/dewatermark_tab.py` 与 `git diff --check` 通过；本轮按用户要求未做重打包/全量测试
 - 拼图上大图布局 + 模板批量删除入口显化 ✅ `73c5e4fcaa1ce95b5daecd189952c17c43adb283` — 验证: `python3 _test_collage.py`、`python3 _test_cli_collage.py`、`QT_QPA_PLATFORM=offscreen python3 _test_collage_tab.py`、`python3 -m py_compile core/collage_processor.py models/collage_model.py ui/collage_tab.py ui/main_window.py` 均通过；UI 测试覆盖 hero 布局按 5 页一组自动生成 3 张拼图
 - AI 背景生成预设重设（实拍参考对齐） ✅ `216f3d8` — 验证: 主会话独立目检样图（教室大屏×学生背影×绿幕，竖构图、横幅国旗黑板边、红领巾背影，风格与用户 10 张实拍模板吻合），create-template method=greenscreen 识别成功；组合联动裁剪消灭不契合排列，绿幕开关默认开，offscreen 冒烟通过
 - 绿幕 GUI 接入 + 合成清晰度修复 ✅ `f302f69` — 验证: 建模板背景自动放大（屏幕宽 665→1600px，压缩比 2.9:1→1.2:1，Laplacian 39.8→395 约 10 倍），绿边复查 0；GUI「自动识别」绿幕优先，冻结 app 自测（与 GUI 同路由）返回像素级规整矩形；打包 dist/融景.app + DMG 已重建
