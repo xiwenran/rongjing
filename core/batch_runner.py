@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from models.template_model import Template
 from core.image_processor import (
@@ -56,6 +56,8 @@ def natural_sort_key(s: str):
 def get_image_files(folder: str):
     files = []
     for fn in sorted(os.listdir(folder), key=natural_sort_key):
+        if fn.startswith("."):
+            continue
         if os.path.splitext(fn)[1].lower() in IMAGE_EXTS:
             files.append(os.path.join(folder, fn))
     return files
@@ -98,6 +100,7 @@ class BatchRunner(QThread):
 
             total = sum(len(files) * len(templates) for _, files, templates in self.tasks)
             done = 0
+            skipped = 0
 
             for group_name, files, templates in self.tasks:
                 output_name_counts = Counter(t.name for t in templates)
@@ -119,10 +122,12 @@ class BatchRunner(QThread):
                     )
 
                     # Precompute mask + bg array once per template (shared across all files)
-                    ppt_size = None
-                    if files:
-                        with Image.open(files[0]) as first_img:
-                            ppt_size = first_img.size
+                    ppt_size = self._first_readable_image_size(files)
+                    if ppt_size is None:
+                        skipped += len(files)
+                        done += len(files)
+                        self.progress.emit(done, total, f"{group_name}/{template_out_name} 没有可识别的图片")
+                        continue
                     with Image.open(template.background_path) as bg_img:
                         bg_size = bg_img.size
                         render_size = template_output_size
@@ -165,16 +170,19 @@ class BatchRunner(QThread):
                         ext = ".jpg" if self.output_format == "JPEG" else ".png"
                         out_path = os.path.join(out_sub, f"{i}{ext}")
 
-                        with Image.open(img_path) as ppt_img:
-                            if render_type == "document_paper":
-                                result = embed_document_paper_pil(
-                                    ppt_img,
-                                    render_bg.copy(),
-                                    render_points,
-                                    render_preset=getattr(template, "render_preset", "clear"),
-                                )
-                            else:
-                                result = embed_image_pil_fast(ppt_img, cache)
+                        try:
+                            with Image.open(img_path) as ppt_img:
+                                if render_type == "document_paper":
+                                    result = embed_document_paper_pil(
+                                        ppt_img,
+                                        render_bg.copy(),
+                                        render_points,
+                                        render_preset=getattr(template, "render_preset", "clear"),
+                                    )
+                                else:
+                                    result = embed_image_pil_fast(ppt_img, cache)
+                        except (UnidentifiedImageError, OSError) as exc:
+                            return i, ext, False, f"跳过无法识别的图片 {os.path.basename(img_path)}：{exc}"
 
                         result = apply_realism(result, realism_cache)
 
@@ -205,7 +213,7 @@ class BatchRunner(QThread):
                         else:
                             result.save(out_path, "PNG")
 
-                        return i, ext
+                        return i, ext, True, ""
 
                     futures = []
                     with ThreadPoolExecutor(max_workers=num_workers) as pool:
@@ -220,7 +228,7 @@ class BatchRunner(QThread):
                                     pending.cancel()
                                 self.finished.emit(False, "已取消"); return
                             try:
-                                i, ext = fut.result()
+                                i, ext, ok, skip_msg = fut.result()
                             except Exception as exc:
                                 if self._abort or str(exc) == "已取消":
                                     for pending in futures:
@@ -229,13 +237,29 @@ class BatchRunner(QThread):
                                 raise
 
                             done += 1
-                            self.progress.emit(done, total, f"{group_name}/{template_out_name}/{i}{ext}")
+                            if ok:
+                                self.progress.emit(done, total, f"{group_name}/{template_out_name}/{i}{ext}")
+                            else:
+                                skipped += 1
+                                self.progress.emit(done, total, skip_msg)
 
-            self.finished.emit(True, f"完成！共处理 {done} 张图片")
+            if skipped:
+                self.finished.emit(True, f"完成！成功 {done - skipped} 张，跳过 {skipped} 张无法识别的图片")
+            else:
+                self.finished.emit(True, f"完成！共处理 {done} 张图片")
 
         except Exception as e:
             import traceback
             self.finished.emit(False, f"错误: {str(e)}\n{traceback.format_exc()}")
+
+    def _first_readable_image_size(self, files: List[str]) -> Optional[Tuple[int, int]]:
+        for path in files:
+            try:
+                with Image.open(path) as img:
+                    return img.size
+            except (UnidentifiedImageError, OSError):
+                continue
+        return None
 
 
 class VideoRunner(QThread):
