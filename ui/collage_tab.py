@@ -61,6 +61,7 @@ _ASPECTS = {
 }
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
+_COLLAGE_MANIFEST = ".rongjing_collage_manifest.json"
 
 _BG_COLORS = [
     ("#FFFFFF", "白色"),
@@ -858,9 +859,18 @@ class CollageTab(QWidget):
         if not os.path.isdir(path):
             return []
         files = []
-        for root, _dirs, names in os.walk(path):
+        base = os.path.abspath(path)
+        for root, dirs, names in os.walk(path):
+            if os.path.abspath(root) != base and self._is_generated_collage_dir(root):
+                dirs[:] = []
+                continue
+            dirs[:] = [
+                name for name in dirs
+                if not name.startswith(".")
+                and not self._is_generated_collage_dir(os.path.join(root, name))
+            ]
             for name in sorted(names):
-                if os.path.splitext(name)[1].lower() in _IMAGE_EXTS:
+                if self._is_source_image_name(name):
                     files.append(os.path.join(root, name))
         files.sort(key=lambda p: self._natural_key(p))
         return files
@@ -871,11 +881,19 @@ class CollageTab(QWidget):
         items = []
         for name in sorted(os.listdir(path), key=self._natural_key):
             sub = os.path.join(path, name)
-            if os.path.isdir(sub):
+            if os.path.isdir(sub) and not name.startswith(".") and not self._is_generated_collage_dir(sub):
                 files = self._scan_image_files(sub)
                 if files:
                     items.append((name, files))
         return items
+
+    @staticmethod
+    def _is_source_image_name(name: str) -> bool:
+        return not name.startswith(".") and os.path.splitext(name)[1].lower() in _IMAGE_EXTS
+
+    @staticmethod
+    def _is_generated_collage_dir(path: str) -> bool:
+        return os.path.isfile(os.path.join(path, _COLLAGE_MANIFEST))
 
     @staticmethod
     def _natural_key(s: str):
