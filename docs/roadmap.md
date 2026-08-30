@@ -26,6 +26,7 @@
 
 ## 已关闭
 
+- 拼图图片文件夹多来源列表显示修复 ✅ `6b7e66409e7a7f0eb0539a3d651c888c6a566d23` — 验证: `python3 -m py_compile ui/collage_tab.py`、`git diff --check`、`QT_QPA_PLATFORM=offscreen` 冒烟确认多子文件夹导入后来源列表显示且切换可恢复各自行数设置；本轮按用户要求未做重打包/全量测试
 - 拼图导入已导出结果目录误识别修复 ✅ `698da2106d24e727cabc685cd789cf134c36ce75` — 验证: `python3 -m py_compile ui/collage_tab.py`、`git diff --check`、`.tmp/verify_collage_import_skip` 冒烟确认父目录扫描只保留原图且不把带 manifest 的成品子目录列为来源；本轮按用户要求未做重打包/全量测试
 - 批量导出 AppleDouble 元数据文件容错修复 ✅ `510105861f00d2037b573147623d2f42af3fb538` — 验证: `python3 -m py_compile core/batch_runner.py` 与 `git diff --check` 通过；坏图跳过冒烟在本轮补丁前已跑通；本轮按用户要求未做重打包/全量测试
 - 拼图重复导出旧结果残留修复 ✅ `dd30c34550d571dc343172eceaf0608c043396bc` — 验证: `python3 -m py_compile ui/collage_tab.py core/collage_batch_runner.py`、`git diff --check`、offscreen 同名 PPT 隔离 / manifest 清理 / 31 页上大图 2×2 自动重算为 7 张均通过；冷眼审查 5 个原问题已修复，新发现 manifest 路径风险已加白名单处理
