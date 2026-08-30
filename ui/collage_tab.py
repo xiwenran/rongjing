@@ -150,6 +150,75 @@ class _PPTImportWorker(QThread):
         self.finished_ok.emit(self._export_dir)
 
 
+class _ThumbnailTile(QWidget):
+    def __init__(self, tab, index: int, path: str):
+        super().__init__()
+        self._tab = tab
+        self._index = index
+        self._press_pos = None
+        self._dragging = False
+        self.setObjectName("thumb_tile")
+        self.setFixedSize(80, 100)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._build(path)
+
+    def _build(self, path: str):
+        excluded = self._index in self._tab._excluded_indices
+        border = _RED if excluded else _GREEN
+        self.setStyleSheet(
+            f"QWidget#thumb_tile {{ background: white; border: 2px solid {border}; border-radius: 6px; }}"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(2)
+
+        image_label = QLabel()
+        image_label.setFixedSize(72, 72)
+        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image_label.setPixmap(self._tab._load_thumb_pixmap(path))
+
+        mark = QLabel("×" if excluded else "✓", self)
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mark.setStyleSheet(
+            f"background: {border}; color: white; border-radius: 8px; font-weight: 700;"
+        )
+        mark.setFixedSize(16, 16)
+        mark.move(58, 3)
+
+        num = QLabel(f"P{self._index + 1}")
+        num.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        num.setStyleSheet("border: 0; color: #666; font-size: 10px;")
+        layout.addWidget(image_label, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(num)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = event.position().toPoint()
+            self._dragging = False
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._press_pos is not None:
+            delta = event.position().toPoint() - self._press_pos
+            if abs(delta.x()) > 8 or abs(delta.y()) > 8:
+                self._dragging = True
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._dragging:
+                body_pos = self.mapTo(self._tab._thumb_body, event.position().toPoint())
+                target = self._tab._thumbnail_index_at(body_pos.x())
+                self._tab._move_thumbnail(self._index, target)
+            else:
+                self._tab._toggle_excluded(self._index)
+        self._press_pos = None
+        self._dragging = False
+        super().mouseReleaseEvent(event)
+
+
 class CollageTab(QWidget):
     """拼图 Tab — 固定高度两栏布局，预览区占右侧主体。"""
 
@@ -537,7 +606,7 @@ class CollageTab(QWidget):
         outer.setSpacing(4)
 
         header = QHBoxLayout()
-        header.addWidget(self._label("页面缩略图（点击排除/恢复）", "cap"))
+        header.addWidget(self._label("页面缩略图（点击排除/恢复，拖动排序）", "cap"))
         header.addStretch(1)
         outer.addLayout(header)
 
@@ -1032,39 +1101,60 @@ class CollageTab(QWidget):
         self._thumb_grid.addStretch(1)
 
     def _thumbnail_widget(self, index: int, path: str) -> QWidget:
-        tile = QWidget()
-        tile.setObjectName("thumb_tile")
-        tile.setFixedSize(80, 100)
-        excluded = index in self._excluded_indices
-        border = _RED if excluded else _GREEN
-        tile.setStyleSheet(
-            f"QWidget#thumb_tile {{ background: white; border: 2px solid {border}; border-radius: 6px; }}"
+        return _ThumbnailTile(self, index, path)
+
+    def _thumbnail_index_at(self, x: int) -> int:
+        if not self._image_files:
+            return 0
+        best_index = 0
+        best_distance = None
+        for i in range(len(self._image_files)):
+            item = self._thumb_grid.itemAt(i)
+            widget = item.widget() if item else None
+            if widget is None:
+                continue
+            center = widget.geometry().center().x()
+            distance = abs(x - center)
+            if best_distance is None or distance < best_distance:
+                best_index = i
+                best_distance = distance
+        return best_index
+
+    def _move_thumbnail(self, from_index: int, to_index: int):
+        total = len(self._image_files)
+        if total <= 1:
+            return
+        if from_index < 0 or from_index >= total:
+            return
+        to_index = max(0, min(total - 1, to_index))
+        if from_index == to_index:
+            return
+
+        pairs = [
+            (path, index in self._excluded_indices)
+            for index, path in enumerate(self._image_files)
+        ]
+        item = pairs.pop(from_index)
+        pairs.insert(to_index, item)
+        self._image_files = [path for path, _excluded in pairs]
+        self._excluded_indices = {
+            index for index, (_path, excluded) in enumerate(pairs) if excluded
+        }
+        self._preview_collage_index = min(
+            self._preview_collage_index,
+            max(0, len(self._current_ranges()) - 1),
         )
-        layout = QVBoxLayout(tile)
-        layout.setContentsMargins(3, 3, 3, 3)
-        layout.setSpacing(2)
+        self._replace_current_source_files()
+        self._active_source_key = self._source_key(self._source_name, self._image_files)
+        self._save_current_source_state()
+        self._refresh_thumbnails()
+        self._refresh_state()
 
-        image_label = QLabel()
-        image_label.setFixedSize(72, 72)
-        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        image_label.setPixmap(self._load_thumb_pixmap(path))
-
-        mark = QLabel("×" if excluded else "✓", tile)
-        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        mark.setStyleSheet(
-            f"background: {border}; color: white; border-radius: 8px; font-weight: 700;"
-        )
-        mark.setFixedSize(16, 16)
-        mark.move(58, 3)
-
-        num = QLabel(f"P{index + 1}")
-        num.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        num.setStyleSheet("border: 0; color: #666; font-size: 10px;")
-        layout.addWidget(image_label, 0, Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(num)
-        tile.setCursor(Qt.CursorShape.PointingHandCursor)
-        tile.mousePressEvent = lambda event, i=index: self._toggle_excluded(i)
-        return tile
+    def _replace_current_source_files(self):
+        row = self._subfolder_list.currentRow() if hasattr(self, "_subfolder_list") else -1
+        if 0 <= row < len(self._subfolder_items):
+            name, _files = self._subfolder_items[row]
+            self._subfolder_items[row] = (name, list(self._image_files))
 
     def _toggle_excluded(self, index: int):
         if index < 0 or index >= len(self._image_files):
@@ -1437,8 +1527,9 @@ class CollageTab(QWidget):
 
     # ── Helpers ───────────────────────────────────────────────────
     def _source_key(self, name: str, files: list[str]) -> str:
-        first = files[0] if files else ""
-        return f"{name}\n{first}\n{len(files)}"
+        fingerprint = "\0".join(sorted(os.path.abspath(path) for path in files))
+        digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()[:12] if files else ""
+        return f"{name}\n{digest}\n{len(files)}"
 
     def _ppt_export_dir(self, pptx_path: str) -> str:
         digest = hashlib.sha1(os.path.abspath(pptx_path).encode("utf-8")).hexdigest()[:10]
