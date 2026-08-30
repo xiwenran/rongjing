@@ -759,6 +759,7 @@ class CollageTab(QWidget):
         self._subfolder_list.clear()
         if not os.path.isdir(path):
             return
+        self._subfolder_list.setVisible(True)
         for name, files in self._find_image_subfolders(path):
             self._subfolder_items.append((name, files))
             self._subfolder_list.addItem(f"{name}  ({len(files)} 张)")
