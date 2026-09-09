@@ -185,7 +185,9 @@ _RED   = "#FA5151"   # 危险色
 
 ### 现行扩展入口
 - 独立「资料导出」页面与 CLI `export-material` 负责 PPT/Word 转 PNG，并严格按所选资料类型扫描
-- 视频入口按输入分流：真实视频继续使用 `VideoRunner`；图片或文件夹生成页面序列视频，单图静态，多图使用平面翻页与阴影转场
+- 视频入口按输入分流：真实视频继续使用 `VideoRunner`；图片或文件夹生成页面序列视频，单图静态，多图在 Mac 上优先使用系统 Core Image 真实曲面卷页，非 Mac 或助手不可用时回退 CPU 平面翻页
+- 页面序列视频复用每页静态合成结果，每组相邻页最多生成 8 张独立曲面帧；Mac 优先使用 VideoToolbox，无法真正打开时回退 libx264
+- 页面图片模式提供「预览翻页」按钮，使用前两张有效页面和首个屏幕模板生成短预览
 - 所有扫描入口先过滤隐藏文件、AppleDouble `._*`、Office 临时文件 `~$*` 和非文件项，再执行排序、计数、封面选择、manifest 生成和任务清单组装
 - 拼图、图片合成、真实视频和资料导出每次分配新来源目录；重名时追加 `_2`、`_3`，旧产物不覆盖、不清理
 
@@ -253,6 +255,8 @@ _RED   = "#FA5151"   # 危险色
 - [x] 新增独立资料导出页和 CLI `export-material`，PPT/Word 严格类型分流
 - [x] 图片、拼图、真实视频和资料导出统一使用不覆盖目录；根目录直接图片使用所选文件夹名
 - [x] 视频入口支持真实视频与页面序列分流，页面序列采用固定 FPS、递增 PTS 和流式 H.264 编码
+- [x] Mac 页面序列使用系统 `CIPageCurlWithShadowTransition` 生成真实曲面卷页；静态页按模板缓存，每组相邻页最多 8 张独立曲面帧；非 Mac 或助手不可用时回退 CPU 平面翻页
+- [x] 页面图片模式新增「预览翻页」按钮；Mac 打包脚本先编译 Swift 助手并通过 PyInstaller 固定打入 `helpers/page_curl/`，编译失败停止打包
 - [x] `material-exporter` 与 `ppt-notes-pipeline` 现役 Skill 归融景维护，旧 `ppt-batch-tool` 项目暂停维护
 - [x] 运行数据目录新增 6 个 AI 生成的「笔记本室内」暗调倾斜场景模板，key 为 `20260909-laptop-indoor-dark-01` 至 `20260909-laptop-indoor-dark-06`
 
@@ -302,10 +306,11 @@ _RED   = "#FA5151"   # 危险色
 40. **拼图拖动排序状态同步**：缩略图拖动排序必须同步 `self._image_files` 和当前多来源项里的文件顺序；排除状态要跟随原图片移动，来源状态 key 不能依赖当前第一张图片，否则拖动后会丢失该来源设置。
 41. **统一过滤时机**：隐藏文件、AppleDouble `._*`、Office 临时文件 `~$*` 和非文件项必须在排序、计数、封面选择、manifest 生成和任务清单组装之前过滤，避免同一输入在不同入口得到不同页数或首图。
 42. **输出目录永不复用**：拼图、图片合成、真实视频和资料导出每次运行都分配新来源目录；同名时追加 `_2`、`_3`，旧目录和 manifest 不覆盖、不清理。根目录直接图片使用所选文件夹名。
-43. **视频入口按输入分流**：真实视频继续使用 `VideoRunner`；图片或文件夹走页面序列，单图静态，多图为平面翻页与阴影转场，并使用固定 FPS、递增 PTS 和流式编码。
+43. **视频入口按输入分流**：真实视频继续使用 `VideoRunner`；图片或文件夹走页面序列，单图静态，多图在 Mac 上优先使用 Core Image 曲面卷页，非 Mac 或助手不可用时回退 CPU 平面翻页，并使用固定 FPS、递增 PTS 和流式编码。
 44. **资料类型严格分流**：资料导出页和 `export-material` 的 PPT 模式只接收 PPT，Word 模式只接收 Word；过滤后的清单才进入转换任务。
 45. **验证边界**：已验证 LibreOffice 导出 PPT 1440×1080 1 页、Word 1224×1584 1 页且连续 2 次不覆盖；页面序列为 H.264、10 FPS、96×64、10 帧且 PTS 递增；offscreen GUI 与 41 项 Skill 链接检查通过。PowerPoint 原生后端、Windows COM、冻结包和 GUI 真机交互未验证。
 46. **运行数据模板补充**：直接补运行模板时，JSON 写入 `~/Library/Application Support/融景/templates/`，背景图写入同级 `backgrounds/`；仓库 commit 只记录事实和验证，不会把用户数据目录里的大图纳入 Git。本次 6 个笔记本室内模板先生成过一版本地占位图，因偏插画感已覆盖为 AI 生成的真实照片感背景。
+47. **Core Image 助手的源码与冻结路径**：源码运行从 `build/page_curl/PageCurlRenderer` 加载；PyInstaller 冻结环境从 `sys._MEIPASS/helpers/page_curl/PageCurlRenderer` 加载。Mac 打包必须先执行 `scripts/build_page_curl_helper.sh` 并以 `--add-binary` 打入固定相对目录，编译失败直接停止；Windows 不打包该助手，继续使用 CPU 回退。P1/P2 已验证源码路径的 Core Image 曲面帧、静态缓存、每组相邻页最多 8 帧与 VideoToolbox，冻结 App 和 GUI 真机交互仍待验证。
 
 ---
 

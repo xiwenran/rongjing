@@ -12,7 +12,14 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 
-DEFAULT_HELPER = Path(__file__).resolve().parents[1] / "build" / "page_curl" / "PageCurlRenderer"
+def _default_helper_path() -> Path:
+    """返回源码运行或 PyInstaller 冻结环境中的 helper 路径。"""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "helpers" / "page_curl" / "PageCurlRenderer"
+    return Path(__file__).resolve().parents[1] / "build" / "page_curl" / "PageCurlRenderer"
+
+
+DEFAULT_HELPER = _default_helper_path()
 
 
 class PageCurlUnavailable(RuntimeError):

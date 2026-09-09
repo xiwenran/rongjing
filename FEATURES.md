@@ -363,15 +363,21 @@ V2 没有直接进入开发，经过三轮审查：
 ### 15.3 视频入口分流
 
 - [x] 真实视频继续交给 `VideoRunner`，保留逐帧嵌入与音频处理流程
-- [x] 图片或文件夹走页面序列视频：单图为静态，多图为平面翻页与阴影转场
+- [x] 图片或文件夹走页面序列视频：单图为静态；多图在 Mac 上优先使用系统 Core Image 真实曲面卷页，非 Mac 或助手不可用时回退 CPU 平面翻页
+- [x] Core Image 每组相邻页只批量调用一次，每组最多生成 8 张独立曲面帧；静态停留帧复用每页已合成结果
+- [x] Mac 优先使用 VideoToolbox 硬件编码，无法真正打开时回退 libx264
+- [x] 页面图片模式提供「预览翻页」按钮，固定使用前两张有效页面与首个屏幕模板生成短预览
 - [x] 页面序列使用固定 FPS、递增 PTS 和流式 H.264 编码
+- [x] Mac 打包脚本先编译 Swift `PageCurlRenderer`，编译失败停止；PyInstaller 将助手放入 App 内固定相对目录
 
 ### 15.4 Skill 归属与验证边界
 
 - [x] `material-exporter` 与 `ppt-notes-pipeline` 现役 Skill 归融景维护，旧 `ppt-batch-tool` 项目暂停维护
 - [x] LibreOffice 已验证 PPT 1440×1080 1 页、Word 1224×1584 1 页，Word 连续 2 次导出未覆盖
 - [x] 页面序列已验证 H.264、10 FPS、96×64、10 帧及 PTS 递增；offscreen GUI 与 41 项 Skill 链接检查通过
-- [ ] PowerPoint 原生后端、Windows COM、冻结包和 GUI 真机交互未验证
+- [x] P1 已验证 `CIPageCurlWithShadowTransition` 离屏首、中、尾 3 帧，目检可见曲面卷边、纸张背面、折痕与阴影
+- [x] P2 已验证正式页面视频实际使用 Core Image 与 VideoToolbox；样本为 H.264、10 FPS、640×360、10 帧且 PTS 递增，静态缓存与每组相邻页最多 8 张独立曲面帧生效
+- [ ] PowerPoint 原生后端、Windows COM、冻结包和 GUI 真机交互未验证；Mac 打包接线已完成静态检查，尚未实际生成冻结 App
 
 ---
 
@@ -386,4 +392,4 @@ V2 没有直接进入开发，经过三轮审查：
 
 ---
 
-*最后更新：2026-09-09（资料导出与页面翻页视频）*
+*最后更新：2026-09-09（Mac Core Image 曲面翻页与打包接线）*

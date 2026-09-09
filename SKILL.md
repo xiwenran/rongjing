@@ -1,6 +1,6 @@
 ---
 name: rongjing
-description: 融景图片与资料处理：把图片嵌入实拍模板、生成页面序列视频，或导出 PPT/Word 页面。触发词：融景、合成图、嵌入大屏、PPT嵌入背景、把图片嵌入模板、大屏合成、用模板合成、资料导出、页面翻页视频。
+description: 融景图片与资料处理：把图片嵌入实拍模板、生成页面序列视频，或导出 PPT/Word 页面。触发词：融景、合成图、嵌入大屏、PPT嵌入背景、把图片嵌入模板、大屏合成、用模板合成、资料导出、页面翻页视频、翻页预览、Core Image翻页。
 ---
 
 # 融景 Skill
@@ -12,6 +12,7 @@ description: 融景图片与资料处理：把图片嵌入实拍模板、生成�
 - 图片或 PPT 截图需要嵌入融景模板时，使用 `process`。
 - PPT 或 Word 需要导出为 PNG 页面时，使用 `export-material`；完整的资料转图或笔记流水线分别进入 `material-exporter`、`ppt-notes-pipeline`。
 - 图片、图片文件夹或真实视频需要生成视频时，使用融景 App 的视频入口：真实视频交给 `VideoRunner`，图片走页面序列视频。
+- 需要快速确认页面转场时，在页面图片模式使用「预览翻页」；该入口取前两张有效页面与首个屏幕模板生成短预览。
 - 需要创建模板时，使用 App 可视化标注，或使用 `create-template` 自动识别。
 
 ## 硬底线
@@ -21,6 +22,7 @@ description: 融景图片与资料处理：把图片嵌入实拍模板、生成�
 - 拼图、图片合成、真实视频和资料导出每次分配新来源目录；重名时使用 `_2`、`_3`，不覆盖或清理旧产物。
 - 跨分类同名模板使用 `list-templates` 返回的 `key`，避免选错模板。
 - 执行后报告实际输出目录、成功数量、失败项和未验证边界，不把 CLI 返回 0 或文件存在单独当作最终验收。
+- Mac 页面序列优先使用随 App 打包的 Core Image 助手，并在可用时使用 VideoToolbox；非 Mac、助手不可用或编码器无法打开时，必须明确报告 CPU/libx264 回退，不把回退结果写成 Core Image/VideoToolbox 已生效。
 
 ## CLI 入口
 
@@ -73,5 +75,5 @@ cd ~/rongjing && python3 cli.py create-template \
 ## 细则指针
 
 - 功能、输出目录和当前验证边界见 `README.md`「功能」「输出文件命名规则」「当前验证边界」节。
-- 已实现项目与待验证项见 `FEATURES.md`「十五、资料导出、统一文件规则与页面翻页视频」节。
+- Core Image 曲面翻页、静态缓存、每组相邻页最多 8 张独立曲面帧、VideoToolbox 与 CPU 回退的已实现项和验证边界，见 `FEATURES.md`「十五、资料导出、统一文件规则与页面翻页视频」节。
 - 资料批量导出与笔记全流程分别见 `skills/material-exporter/SKILL.md`、`skills/ppt-notes-pipeline/SKILL.md` 的「工作流程」节。

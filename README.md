@@ -50,7 +50,10 @@
 ### 批量合成视频
 - 视频入口同时接收真实视频、图片文件和图片文件夹
 - 真实视频继续由 `VideoRunner` 逐帧嵌入场景模板；自动保留原始音频（重编码为 AAC）
-- 单张图片生成静态视频；多张图片按平面翻页与阴影转场生成页面序列视频
+- 单张图片生成静态视频；多张图片在 Mac 上优先调用系统 Core Image 生成真实曲面卷页、纸张背面、折痕与阴影，非 Mac 或助手不可用时回退到 CPU 平面翻页
+- 页面序列视频复用每页静态合成结果；每组相邻页最多渲染 8 张独立曲面帧，最终视频按所选帧率映射，避免重复计算
+- Mac 优先使用 VideoToolbox 硬件编码，探测或打开失败时回退到 libx264
+- 页面图片模式提供「预览翻页」按钮，使用前两张有效页面和当前所选的首个屏幕模板生成短预览
 - 页面序列采用固定 FPS 和递增 PTS 流式编码，无需一次性把全部帧载入内存
 - 支持视频格式：`.mp4` `.mov` `.avi` `.mkv` `.m4v` `.wmv`
 
@@ -80,10 +83,20 @@
 | 界面 | PyQt6 | 跨平台 GUI，QThread 异步处理 |
 | 图像处理 | Pillow + NumPy | 透视变换（`Image.PERSPECTIVE`）、mask 羽化（MinFilter + GaussianBlur）、Alpha 混合 |
 | 视频处理 | PyAV | libx264 视频编码 + AAC 音频，无需安装 ffmpeg |
+| Mac 曲面翻页 | Swift + Core Image | `CIPageCurlWithShadowTransition` 批量渲染；助手随 Mac App 打包 |
+| Mac 视频编码 | VideoToolbox | 探测到编码器可真正打开时使用，否则回退 libx264 |
 | 性能优化 | ThreadPoolExecutor | 视频帧多线程并行处理（PIL/NumPy 的 C 实现释放 GIL，真正并行） |
 | 缓存优化 | 预计算 cache | mask、背景数组、透视系数在处理前一次性计算，所有帧复用 |
 | 路径持久化 | QSettings | 记忆每个选择器的上次路径 |
 | 打包 | PyInstaller | Mac 本机打包；Windows 由 GitHub Actions 自动构建 |
+
+## 当前验证边界
+
+- P1 已在 Mac 源码环境确认系统 `CIPageCurlWithShadowTransition` 可离屏输出首、中、尾 3 帧；首尾与源页面一致，中间帧可见曲面卷边、纸张背面、折痕与阴影。
+- P2 已由正式页面视频流程确认实际使用 Core Image 与 VideoToolbox，样本为 H.264、10 FPS、640×360、10 帧且 PTS 递增；静态页每个模板每页只合成一次，每组相邻页只批量调用一次助手，独立曲面帧不超过 8 张。
+- P3 已用 offscreen 界面检查确认「预览翻页」仅在页面图片输入时显示，并使用前两张有效页面与首个屏幕模板。
+- Mac 打包脚本现会先编译 Swift 助手，再把可执行文件加入 App；助手编译失败会直接停止打包。本轮尚未实际生成冻结 App，也未完成冻结包真机与 GUI 交互验证。
+- Windows 不打包 Core Image 助手，页面翻页继续使用 CPU 回退；Windows COM 资料导出仍未验证。
 
 ### 透视变换算法细节
 1. 用 `ImageDraw.polygon` 生成四边形 mask

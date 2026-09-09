@@ -20,7 +20,17 @@ echo "  PPT 场景合成工具 — 打包脚本"
 echo "  当前架构: $ARCH"
 echo "=========================================="
 echo ""
-echo "▶ 步骤 1/3  PyInstaller 打包 .app ..."
+echo "▶ 步骤 1/4  编译 Core Image 翻页助手 ..."
+PAGE_CURL_HELPER="$PROJECT_DIR/build/page_curl/PageCurlRenderer"
+"$SCRIPT_DIR/build_page_curl_helper.sh" "$PAGE_CURL_HELPER"
+
+if [ ! -x "$PAGE_CURL_HELPER" ]; then
+  echo "Core Image 翻页助手未生成或不可执行：$PAGE_CURL_HELPER" >&2
+  exit 1
+fi
+
+echo ""
+echo "▶ 步骤 2/4  PyInstaller 打包 .app ..."
 
 # 注入构建标识（git 短 SHA）
 BUILD=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -38,14 +48,15 @@ pyinstaller \
   --collect-submodules "openai" \
   --noconfirm \
   --add-data "_build_info.py:." \
+  --add-binary "$PAGE_CURL_HELPER:helpers/page_curl" \
   main.py
 
 echo ""
-echo "▶ 步骤 2/3  移除旧的隔离属性（本机测试用）..."
+echo "▶ 步骤 3/4  移除旧的隔离属性（本机测试用）..."
 xattr -cr "dist/$APP_NAME.app" 2>/dev/null || true
 
 echo ""
-echo "▶ 步骤 3/3  打包为 .dmg ..."
+echo "▶ 步骤 4/4  打包为 .dmg ..."
 
 DMG_NAME="${APP_NAME}_${ARCH}.dmg"
 DMG_TMP="dist/dmg_tmp"
