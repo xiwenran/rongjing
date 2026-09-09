@@ -204,22 +204,42 @@ def test_preview_cache_root_replacement_does_not_redirect_deletion():
 
 
 def test_offscreen_preview_dialog_contract():
-    from ui.page_video_preview_dialog import MULTIMEDIA_AVAILABLE, PageVideoPreviewDialog
+    from ui.page_video_preview_dialog import PageVideoPreviewDialog
 
-    assert MULTIMEDIA_AVAILABLE
     video = ROOT / "dialog" / "preview.mp4"
     video.parent.mkdir(parents=True)
-    video.write_bytes(b"placeholder")
+    container = av.open(str(video), "w")
+    stream = container.add_stream("libx264", rate=15)
+    stream.width = 96
+    stream.height = 64
+    stream.pix_fmt = "yuv420p"
+    for color in ((220, 30, 30), (30, 180, 80), (30, 80, 220)):
+        image = Image.new("RGB", (96, 64), color)
+        for packet in stream.encode(av.VideoFrame.from_image(image)):
+            container.mux(packet)
+    for packet in stream.encode():
+        container.mux(packet)
+    container.close()
+
     dialog = PageVideoPreviewDialog()
     assert dialog.size().width() == 900 and dialog.size().height() == 560
     assert dialog.set_source(str(video))
-    assert dialog.player.source().toLocalFile() == str(video.resolve())
-    assert dialog.play_button.text() in {"播放", "暂停"}
+    assert len(dialog.frames) == 3
+    assert dialog.source == video.resolve()
+    assert dialog.timer.isActive()
+    first_index = dialog.frame_index
+    dialog._advance_frame()
+    assert dialog.frame_index != first_index
+    dialog._toggle_playback()
+    assert not dialog.timer.isActive() and dialog.play_button.text() == "播放"
+    dialog._replay()
+    assert dialog.frame_index == 0 and dialog.timer.isActive()
     assert dialog.replay_button.text() == "重新播放"
     assert dialog.close_button.text() == "关闭"
     dialog.close()
     APP.processEvents()
-    assert dialog.player.source().isEmpty()
+    assert not dialog.timer.isActive()
+    assert dialog.frames == [] and dialog.source is None
 
 
 def test_even_size_cancel_bad_image_and_non_overwrite():

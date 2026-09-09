@@ -2636,7 +2636,7 @@ class MainWindow(QMainWindow):
             if self._page_preview_dialog:
                 self._page_preview_dialog.close()
             self._page_preview_dialog = PageVideoPreviewDialog(self)
-            self._page_preview_dialog.set_source(preview_path)
-            self._page_preview_dialog.open()
+            if self._page_preview_dialog.set_source(preview_path):
+                self._page_preview_dialog.open()
         else:
             QMessageBox.warning(self, "预览失败", msg)

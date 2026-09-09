@@ -1,10 +1,12 @@
-"""应用内页面翻页视频预览弹窗；QtMultimedia 缺失时安全降级。"""
+"""应用内页面翻页视频预览弹窗；使用 PyAV 解码后逐帧显示。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QUrl
+import av
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -14,16 +16,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-try:
-    from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
-    from PyQt6.QtMultimediaWidgets import QVideoWidget
-except ImportError as exc:  # pragma: no cover - 只在裁剪版 PyQt6 环境触发
-    QAudioOutput = QMediaPlayer = QVideoWidget = None
-    MULTIMEDIA_AVAILABLE = False
-    MULTIMEDIA_UNAVAILABLE_REASON = str(exc)
-else:
-    MULTIMEDIA_AVAILABLE = True
-    MULTIMEDIA_UNAVAILABLE_REASON = ""
+
+MAX_PREVIEW_FRAMES = 120
+DEFAULT_PREVIEW_FPS = 15.0
 
 
 class PageVideoPreviewDialog(QDialog):
@@ -36,11 +31,18 @@ class PageVideoPreviewDialog(QDialog):
             """
             QDialog { background: #F7F7F7; }
             QWidget#previewCard { background: #FFFFFF; border: 1px solid #E5E5E5; border-radius: 16px; }
+            QLabel#previewFrame { background: #191919; border-radius: 10px; }
             QLabel#previewStatus { color: #888888; padding: 2px 4px; }
             QPushButton { min-height: 36px; padding: 0 18px; border-radius: 18px; background: #F0F0F0; color: #191919; }
             QPushButton#primary { background: #07C160; color: white; font-weight: 600; }
             """
         )
+
+        self.frames: list[QImage] = []
+        self.source: Path | None = None
+        self.frame_index = 0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._advance_frame)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -49,29 +51,14 @@ class PageVideoPreviewDialog(QDialog):
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(12, 12, 12, 12)
 
+        self.video_label = QLabel(card)
+        self.video_label.setObjectName("previewFrame")
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_label.setMinimumSize(1, 1)
         self.status_label = QLabel("正在加载预览…")
         self.status_label.setObjectName("previewStatus")
         self.status_label.setWordWrap(True)
-
-        self.player = None
-        self.audio_output = None
-        if MULTIMEDIA_AVAILABLE:
-            self.video_widget = QVideoWidget(card)
-            self.video_widget.setStyleSheet("background: #191919; border-radius: 10px;")
-            self.audio_output = QAudioOutput(self)
-            self.player = QMediaPlayer(self)
-            self.player.setAudioOutput(self.audio_output)
-            self.player.setVideoOutput(self.video_widget)
-            self.player.mediaStatusChanged.connect(self._on_media_status_changed)
-            self.player.errorOccurred.connect(self._on_player_error)
-            self.player.playbackStateChanged.connect(self._sync_play_button)
-            card_layout.addWidget(self.video_widget, 1)
-        else:
-            self.video_widget = QLabel("当前 PyQt6 不含 QtMultimedia，无法在应用内播放预览。", card)
-            self.video_widget.setWordWrap(True)
-            self.video_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            card_layout.addWidget(self.video_widget, 1)
-
+        card_layout.addWidget(self.video_label, 1)
         card_layout.addWidget(self.status_label)
         layout.addWidget(card, 1)
 
@@ -89,62 +76,116 @@ class PageVideoPreviewDialog(QDialog):
         controls.addWidget(self.close_button)
         layout.addLayout(controls)
 
-        if not MULTIMEDIA_AVAILABLE:
-            self.play_button.setEnabled(False)
-            self.replay_button.setEnabled(False)
-            self.status_label.setText(
-                "应用内播放器不可用。请安装包含 QtMultimedia 的 PyQt6 后重试。"
-            )
-
     def set_source(self, path: str) -> bool:
-        if not self.player:
-            return False
+        self._release_source()
         source = Path(path)
         if not source.is_file():
-            self.status_label.setText("预览文件不存在，请重新生成。")
-            return False
-        self.player.setSource(QUrl.fromLocalFile(str(source.resolve())))
+            return self._show_load_error("预览文件不存在，请重新生成。")
+
+        try:
+            with av.open(str(source)) as container:
+                stream = container.streams.video[0]
+                rate = stream.average_rate or stream.guessed_rate
+                fps = float(rate) if rate else DEFAULT_PREVIEW_FPS
+                if fps <= 0:
+                    fps = DEFAULT_PREVIEW_FPS
+                decoded: list[QImage] = []
+                for frame in container.decode(stream):
+                    if len(decoded) >= MAX_PREVIEW_FRAMES:
+                        raise ValueError(
+                            f"预览超过 {MAX_PREVIEW_FRAMES} 帧，请缩短预览后重试。"
+                        )
+                    array = frame.to_ndarray(format="rgb24")
+                    height, width, _channels = array.shape
+                    image = QImage(
+                        array.data,
+                        width,
+                        height,
+                        int(array.strides[0]),
+                        QImage.Format.Format_RGB888,
+                    ).copy()
+                    if image.isNull():
+                        raise ValueError("视频帧转换失败。")
+                    decoded.append(image)
+        except Exception as exc:
+            detail = str(exc).strip()
+            return self._show_load_error(
+                f"预览加载失败：{detail}" if detail else "预览加载失败，请重新生成后再试。"
+            )
+
+        if not decoded:
+            return self._show_load_error("预览中没有可播放的视频帧。")
+
+        self.frames = decoded
+        self.source = source.resolve()
+        self.frame_index = 0
+        self.timer.setInterval(max(1, round(1000 / fps)))
+        self._show_current_frame()
         self.status_label.setText("预览已生成，正在播放…")
-        self.player.play()
+        self.play_button.setText("暂停")
+        self.play_button.setEnabled(True)
+        self.replay_button.setEnabled(True)
+        self.timer.start()
         return True
 
-    def _toggle_playback(self):
-        if not self.player:
+    def _show_load_error(self, message: str) -> bool:
+        self.video_label.clear()
+        self.video_label.setText("预览暂不可用")
+        self.status_label.setText(message)
+        self.play_button.setText("播放")
+        self.play_button.setEnabled(False)
+        self.replay_button.setEnabled(False)
+        return False
+
+    def _show_current_frame(self):
+        if not self.frames:
             return
-        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            self.player.pause()
+        image = self.frames[self.frame_index]
+        pixmap = QPixmap.fromImage(image).scaled(
+            self.video_label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.video_label.setPixmap(pixmap)
+
+    def _advance_frame(self):
+        if not self.frames:
+            return
+        self.frame_index = (self.frame_index + 1) % len(self.frames)
+        self._show_current_frame()
+
+    def _toggle_playback(self):
+        if not self.frames:
+            return
+        if self.timer.isActive():
+            self.timer.stop()
+            self.play_button.setText("播放")
+            self.status_label.setText("预览已暂停")
         else:
-            self.player.play()
+            self.timer.start()
+            self.play_button.setText("暂停")
+            self.status_label.setText("预览已生成，正在播放…")
 
     def _replay(self):
-        if self.player:
-            self.player.setPosition(0)
-            self.player.play()
-
-    def _on_media_status_changed(self, status):
-        if not self.player:
+        if not self.frames:
             return
-        if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            self.player.setPosition(0)
-            self.player.play()
-        elif status == QMediaPlayer.MediaStatus.InvalidMedia:
-            self.status_label.setText("预览加载失败，请重新生成后再试。")
+        self.frame_index = 0
+        self._show_current_frame()
+        self.timer.start()
+        self.play_button.setText("暂停")
+        self.status_label.setText("预览已生成，正在播放…")
 
-    def _on_player_error(self, _error, error_text=""):
-        detail = str(error_text).strip()
-        self.status_label.setText(
-            f"预览播放失败：{detail}" if detail else "预览播放失败，请重新生成后再试。"
-        )
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._show_current_frame()
 
-    def _sync_play_button(self, state):
-        if not self.player:
-            return
-        playing = state == QMediaPlayer.PlaybackState.PlayingState
-        self.play_button.setText("暂停" if playing else "播放")
+    def _release_source(self):
+        self.timer.stop()
+        self.frames.clear()
+        self.source = None
+        self.frame_index = 0
 
     def closeEvent(self, event):
-        if self.player:
-            self.player.stop()
-            self.player.setSource(QUrl())
-            self.player.setVideoOutput(None)
+        self._release_source()
+        self.video_label.clear()
         super().closeEvent(event)
