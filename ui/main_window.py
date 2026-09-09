@@ -16,8 +16,8 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QFrame, QScrollArea, QDialog, QCheckBox, QDialogButtonBox,
     QSizePolicy, QMenu, QWidgetAction,
 )
-from PyQt6.QtCore import Qt, QSize, QSettings, QPoint, QUrl
-from PyQt6.QtGui import QFont, QColor, QDesktopServices
+from PyQt6.QtCore import Qt, QSize, QSettings, QPoint
+from PyQt6.QtGui import QFont, QColor
 from PIL import Image, UnidentifiedImageError
 
 from models.template_model import (
@@ -29,6 +29,13 @@ from models.template_model import (
 from core.batch_runner import BatchRunner, VideoRunner, get_image_files, natural_sort_key
 from core.file_policy import is_valid_input_file
 from core.page_video_runner import classify_media_paths, normalize_page_paths
+from core.core_image_page_curl import LEFT_TO_RIGHT, RIGHT_TO_LEFT
+from core.page_preview_cache import (
+    allocate_preview_dir,
+    cleanup_expired_preview_cache,
+    preview_cache_root,
+)
+from ui.page_video_preview_dialog import PageVideoPreviewDialog
 from core.ai_background import normalize_base_url
 from core.screen_detector import detect_screen_points, detect_green_screen_points
 from ui.canvas_widget import CanvasWidget
@@ -599,6 +606,7 @@ class MainWindow(QMainWindow):
         self._batch_running = False
         self._preview_running = False
         self._preview_output_path = None
+        self._page_preview_dialog = None
         self._loaded_tpl_name: str = None   # track which template is currently loaded
         self._row_selections: dict = {}     # row index → list of template names
         self._picked_image_files = []
@@ -615,6 +623,15 @@ class MainWindow(QMainWindow):
         self._page_hold_seconds = float(self._settings.value("page_video/hold_seconds", 2.0))
         self._page_turn_seconds = float(self._settings.value("page_video/turn_seconds", 0.7))
         self._page_video_fps = int(self._settings.value("page_video/fps", 25))
+        self._page_turn_direction = self._settings.value(
+            "page_video/direction", RIGHT_TO_LEFT
+        )
+        if self._page_turn_direction not in {RIGHT_TO_LEFT, LEFT_TO_RIGHT}:
+            self._page_turn_direction = RIGHT_TO_LEFT
+        self._preview_cache_root = preview_cache_root(self._app_data_dir)
+        self._preview_cache_cleanup_stats = cleanup_expired_preview_cache(
+            self._preview_cache_root
+        )
         self._video_input_kind = None
         self._last_preview_image = self._settings.value("last_preview_image", "")
         self._batch_output_width = int(self._settings.value("batch_output_width", 1920))
@@ -1052,12 +1069,19 @@ class MainWindow(QMainWindow):
         self.page_turn_spin.setSuffix(" 秒"); self.page_turn_spin.setValue(self._page_turn_seconds)
         self.page_fps_spin = QSpinBox()
         self.page_fps_spin.setRange(12, 60); self.page_fps_spin.setValue(self._page_video_fps)
+        self.page_direction_combo = QComboBox()
+        self.page_direction_combo.addItem("从右向左（默认）", RIGHT_TO_LEFT)
+        self.page_direction_combo.addItem("从左向右", LEFT_TO_RIGHT)
+        direction_index = self.page_direction_combo.findData(self._page_turn_direction)
+        self.page_direction_combo.setCurrentIndex(max(0, direction_index))
         page_settings.addRow("每页停留", self.page_hold_spin)
         page_settings.addRow("翻页时长", self.page_turn_spin)
         page_settings.addRow("帧率", self.page_fps_spin)
+        page_settings.addRow("翻页方向", self.page_direction_combo)
         self.page_hold_spin.valueChanged.connect(self._save_page_video_settings)
         self.page_turn_spin.valueChanged.connect(self._save_page_video_settings)
         self.page_fps_spin.valueChanged.connect(self._save_page_video_settings)
+        self.page_direction_combo.currentIndexChanged.connect(self._save_page_video_settings)
         self._page_video_settings_widget.hide()
         fvi.addWidget(self._page_video_settings_widget)
         c1_video.hide(); fv.addWidget(c1_video)
@@ -2087,9 +2111,11 @@ class MainWindow(QMainWindow):
         self._page_hold_seconds = self.page_hold_spin.value()
         self._page_turn_seconds = self.page_turn_spin.value()
         self._page_video_fps = self.page_fps_spin.value()
+        self._page_turn_direction = self.page_direction_combo.currentData() or RIGHT_TO_LEFT
         self._settings.setValue("page_video/hold_seconds", self._page_hold_seconds)
         self._settings.setValue("page_video/turn_seconds", self._page_turn_seconds)
         self._settings.setValue("page_video/fps", self._page_video_fps)
+        self._settings.setValue("page_video/direction", self._page_turn_direction)
 
     # ── Batch actions ─────────────────────────────────────────────────────────
 
@@ -2457,9 +2483,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "请先为当前页面来源选择屏幕类场景模板")
             return
 
-        from core.page_video_runner import ImageSequenceVideoRunner, allocate_page_curl_work_dir
+        from core.page_video_runner import ImageSequenceVideoRunner
 
-        preview_dir = allocate_page_curl_work_dir()
+        try:
+            preview_dir = allocate_preview_dir(self._preview_cache_root)
+        except OSError as exc:
+            QMessageBox.warning(self, "预览失败", f"无法创建预览缓存：{exc}")
+            return
         preview_path = preview_dir / "翻页预览.mp4"
         self._preview_output_path = str(preview_path)
         self._batch_runner = ImageSequenceVideoRunner(
@@ -2472,6 +2502,8 @@ class MainWindow(QMainWindow):
             realism_strength=self.realism_strength_spin.value(),
             output_path=self._preview_output_path,
             max_output_width=960,
+            direction=self.page_direction_combo.currentData() or RIGHT_TO_LEFT,
+            page_curl_work_root=str(preview_dir / "render_cache"),
         )
         self._batch_runner.progress.connect(self._on_progress)
         self._batch_runner.finished.connect(self._on_preview_finished)
@@ -2570,6 +2602,7 @@ class MainWindow(QMainWindow):
                 fps=self.page_fps_spin.value(),
                 realism_enabled=self._realism_enabled,
                 realism_strength=self._realism_strength,
+                direction=self.page_direction_combo.currentData() or RIGHT_TO_LEFT,
             )
         else:
             from core.batch_runner import VideoRunner
@@ -2600,9 +2633,12 @@ class MainWindow(QMainWindow):
     def _on_preview_finished(self, success, msg):
         preview_path = self._preview_output_path
         self._set_batch_running(False)
-        self.progress_label.setText(msg)
+        self.progress_label.setText("预览已生成" if success else "预览生成失败")
         if success and preview_path and os.path.isfile(preview_path):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(preview_path))
-            QMessageBox.information(self, "预览已生成", msg)
+            if self._page_preview_dialog:
+                self._page_preview_dialog.close()
+            self._page_preview_dialog = PageVideoPreviewDialog(self)
+            self._page_preview_dialog.set_source(preview_path)
+            self._page_preview_dialog.open()
         else:
             QMessageBox.warning(self, "预览失败", msg)

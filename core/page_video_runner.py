@@ -16,7 +16,14 @@ from PIL import Image, ImageDraw, UnidentifiedImageError
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.file_policy import is_valid_input_file, natural_sort_key, scan_input_files
-from core.core_image_page_curl import PageCurlRenderError, PageCurlUnavailable, availability, render_batch
+from core.core_image_page_curl import (
+    RIGHT_TO_LEFT,
+    PageCurlRenderError,
+    PageCurlUnavailable,
+    availability,
+    normalize_direction,
+    render_batch,
+)
 from core.image_processor import embed_image_pil, embed_image_pil_fast, precompute_template_cache
 from core.output_paths import allocate_unique_directory, allocate_unique_file
 from core.realism_filter import apply_realism, precompute_realism
@@ -84,8 +91,22 @@ def fit_page(image: Image.Image, size: tuple[int, int]) -> Image.Image:
     return canvas
 
 
-def render_page_turn(current: Image.Image, following: Image.Image, progress: float) -> Image.Image:
-    """Render a right-to-left planar page turn with a moving-edge/spine shadow."""
+def render_page_turn(
+    current: Image.Image,
+    following: Image.Image,
+    progress: float,
+    direction: str = RIGHT_TO_LEFT,
+) -> Image.Image:
+    """Render a planar page turn; left-to-right is a true horizontal mirror."""
+    direction = normalize_direction(direction)
+    if direction != RIGHT_TO_LEFT:
+        rendered = render_page_turn(
+            current.transpose(Image.Transpose.FLIP_LEFT_RIGHT),
+            following.transpose(Image.Transpose.FLIP_LEFT_RIGHT),
+            progress,
+            RIGHT_TO_LEFT,
+        )
+        return rendered.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
     progress = min(1.0, max(0.0, float(progress)))
     current = current.convert("RGB")
     following = (
@@ -162,9 +183,9 @@ def select_encoder(width: int, height: int, fps: int) -> tuple[str, dict, dict]:
     return "libx264", {"crf": "18", "preset": "veryfast"}, {}
 
 
-def allocate_page_curl_work_dir() -> Path:
+def allocate_page_curl_work_dir(root: str | os.PathLike[str] | None = None) -> Path:
     """Allocate a unique cache item covered by the existing cache-cleanup UI."""
-    cache_root = Path(
+    cache_root = Path(root).expanduser() if root is not None else Path(
         os.environ.get("RONGJING_PAGE_CURL_CACHE_DIR", "~/.rongjing/ai_cache")
     ).expanduser()
     work_dir = cache_root / f"page_curl-{uuid.uuid4().hex}"
@@ -179,7 +200,8 @@ def allocate_page_curl_work_dir() -> Path:
 
 
 def iter_page_frames(
-    pages: Sequence[Image.Image], hold_seconds: float, turn_seconds: float, fps: int
+    pages: Sequence[Image.Image], hold_seconds: float, turn_seconds: float, fps: int,
+    direction: str = RIGHT_TO_LEFT,
 ):
     """Yield frames one at a time; the encoded sequence is never materialized."""
     if not pages:
@@ -193,7 +215,7 @@ def iter_page_frames(
         if index + 1 < len(normalized):
             for turn_index in range(turn_frames):
                 progress = (turn_index + 1) / turn_frames
-                yield render_page_turn(page, normalized[index + 1], progress)
+                yield render_page_turn(page, normalized[index + 1], progress, direction)
 
 
 class ImageSequenceVideoRunner(QThread):
@@ -212,6 +234,8 @@ class ImageSequenceVideoRunner(QThread):
         realism_strength: int = 70,
         output_path: str | None = None,
         max_output_width: int | None = None,
+        direction: str = RIGHT_TO_LEFT,
+        page_curl_work_root: str | os.PathLike[str] | None = None,
         parent=None,
     ):
         """Tasks are ``(source_name, page_paths, screen_templates)`` tuples."""
@@ -224,6 +248,8 @@ class ImageSequenceVideoRunner(QThread):
         self.output_dir = output_dir
         self.output_path = output_path
         self.max_output_width = int(max_output_width) if max_output_width else None
+        self.direction = normalize_direction(direction)
+        self.page_curl_work_root = page_curl_work_root
         if self.output_path:
             if len(self.tasks) != 1 or len(self.tasks[0][2]) != 1:
                 raise ValueError("明确输出文件只支持一个页面来源和一个模板")
@@ -282,7 +308,7 @@ class ImageSequenceVideoRunner(QThread):
         progresses = transition_progresses(turn_frames)
         ci_available, unavailable_reason = availability()
         if ci_available:
-            work_dir = allocate_page_curl_work_dir()
+            work_dir = allocate_page_curl_work_dir(self.page_curl_work_root)
             self.work_dirs.append(str(work_dir))
             page_paths = []
             for index, page in enumerate(pages):
@@ -304,6 +330,7 @@ class ImageSequenceVideoRunner(QThread):
                         pages[0].width,
                         pages[0].height,
                         manifest_path=pair_dir / "manifest.json",
+                        direction=self.direction,
                     )
                     filter_names.add(result["filter"])
                     pair_frames = []
@@ -318,7 +345,12 @@ class ImageSequenceVideoRunner(QThread):
                 unavailable_reason = str(exc)
 
         cpu_pairs = [
-            [render_page_turn(pages[index], pages[index + 1], progress) for progress in progresses]
+            [
+                render_page_turn(
+                    pages[index], pages[index + 1], progress, self.direction
+                )
+                for progress in progresses
+            ]
             for index in range(len(pages) - 1)
         ]
         return cpu_pairs, "CPU 平面翻页", unavailable_reason

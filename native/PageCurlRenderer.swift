@@ -20,9 +20,10 @@ struct RenderManifest: Decodable {
     let width: Int
     let height: Int
     let curl: CurlOptions?
+    let direction: String?
 
     enum CodingKeys: String, CodingKey {
-        case source, target, width, height, curl
+        case source, target, width, height, curl, direction
         case outputDir = "output_dir"
         case progress
     }
@@ -155,6 +156,14 @@ private func render(
     return output.cropped(to: extent)
 }
 
+private func mirroredHorizontally(_ image: CIImage, extent: CGRect) -> CIImage {
+    let transform = CGAffineTransform(
+        a: -1.0, b: 0.0, c: 0.0, d: 1.0,
+        tx: extent.minX + extent.maxX, ty: 0.0
+    )
+    return image.transformed(by: transform).cropped(to: extent)
+}
+
 private func run() throws {
     guard CommandLine.arguments.count == 2 else { throw RendererError.usage }
     if CommandLine.arguments[1] == "--probe-input-keys" {
@@ -197,18 +206,26 @@ private func run() throws {
     guard manifest.progress.allSatisfy({ $0.isFinite && $0 >= 0.0 && $0 <= 1.0 }) else {
         throw RendererError.invalidManifest("progress 必须全部位于 0...1")
     }
+    let direction = manifest.direction ?? "right_to_left"
+    guard direction == "right_to_left" || direction == "left_to_right" else {
+        throw RendererError.invalidManifest("direction 必须是 right_to_left 或 left_to_right")
+    }
 
     let (_, filterName) = try makeFilter()
     let extent = CGRect(x: 0, y: 0, width: manifest.width, height: manifest.height)
-    let source = try normalizedImage(path: manifest.source, extent: extent)
-    let target = try normalizedImage(path: manifest.target, extent: extent)
+    let normalizedSource = try normalizedImage(path: manifest.source, extent: extent)
+    let normalizedTarget = try normalizedImage(path: manifest.target, extent: extent)
+    let source = direction == "left_to_right"
+        ? mirroredHorizontally(normalizedSource, extent: extent) : normalizedSource
+    let target = direction == "left_to_right"
+        ? mirroredHorizontally(normalizedTarget, extent: extent) : normalizedTarget
     let outputURL = URL(fileURLWithPath: manifest.outputDir, isDirectory: true)
     try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
 
     let context = CIContext(options: [.cacheIntermediates: true])
     var frames: [FrameResult] = []
     for (index, progress) in manifest.progress.enumerated() {
-        let image = try render(
+        var image = try render(
             source: source,
             target: target,
             extent: extent,
@@ -216,6 +233,9 @@ private func run() throws {
             filterName: filterName,
             options: manifest.curl
         )
+        if direction == "left_to_right" {
+            image = mirroredHorizontally(image, extent: extent)
+        }
         let filename = String(format: "frame_%04d.png", index)
         let destination = outputURL.appendingPathComponent(filename)
         guard let rendered = context.createCGImage(image, from: extent) else {

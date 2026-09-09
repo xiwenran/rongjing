@@ -25,6 +25,8 @@ from core.page_video_runner import (
     transition_frame_indices,
     transition_progresses,
 )
+from core.core_image_page_curl import LEFT_TO_RIGHT, RIGHT_TO_LEFT, normalize_direction
+from core.page_preview_cache import cleanup_expired_preview_cache
 from models.template_model import Template
 
 
@@ -110,6 +112,78 @@ def test_counts_pts_plan_and_transition_geometry():
     assert ImageChops.difference(middle, first).getbbox() is not None
     assert ImageChops.difference(middle, last).getbbox() is not None
     assert middle.getpixel((10, 24))[0] > middle.getpixel((70, 24))[0]
+
+
+def test_page_turn_direction_mirror_contract():
+    current = Image.new("RGB", (80, 48), (240, 20, 20))
+    following = Image.new("RGB", (80, 48), (20, 20, 240))
+    rtl = render_page_turn(current, following, 0.5, RIGHT_TO_LEFT)
+    ltr = render_page_turn(current, following, 0.5, LEFT_TO_RIGHT)
+    mirrored_rtl = render_page_turn(
+        current.transpose(Image.Transpose.FLIP_LEFT_RIGHT),
+        following.transpose(Image.Transpose.FLIP_LEFT_RIGHT),
+        0.5,
+        RIGHT_TO_LEFT,
+    ).transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    assert ImageChops.difference(ltr, mirrored_rtl).getbbox() is None
+    assert rtl.getpixel((10, 24))[0] > rtl.getpixel((70, 24))[0]
+    assert ltr.getpixel((70, 24))[0] > ltr.getpixel((10, 24))[0]
+    try:
+        normalize_direction("sideways")
+    except ValueError as exc:
+        assert "未知翻页方向" in str(exc)
+    else:
+        raise AssertionError("未知方向未被拒绝")
+
+
+def test_preview_cache_cleanup_plan_without_deleting():
+    folder = ROOT / "preview-cache"
+    cache_root = folder / "page_preview_cache"
+    old_dir = cache_root / "old-dir"
+    young_dir = cache_root / "young-dir"
+    old_file = cache_root / "old-file.tmp"
+    outside = folder / "outside.txt"
+    old_dir.mkdir(parents=True)
+    young_dir.mkdir()
+    old_file.write_text("old", encoding="utf-8")
+    outside.write_text("outside", encoding="utf-8")
+    symlink = cache_root / "outside-link"
+    symlink.symlink_to(outside)
+    now = 2_000_000_000.0
+    old = now - 25 * 60 * 60
+    os.utime(old_dir, (old, old))
+    os.utime(old_file, (old, old))
+    os.utime(young_dir, (now, now))
+    with (
+        mock.patch("core.page_preview_cache.shutil.rmtree") as rmtree_mock,
+        mock.patch.object(Path, "unlink") as unlink_mock,
+    ):
+        stats = cleanup_expired_preview_cache(cache_root, now=now)
+    assert stats["removed"] == 2
+    assert stats["kept"] == 1
+    assert stats["skipped_symlinks"] == 1
+    rmtree_mock.assert_called_once_with(old_dir)
+    unlink_mock.assert_called_once_with()
+    assert outside.exists() and symlink.is_symlink()
+
+
+def test_offscreen_preview_dialog_contract():
+    from ui.page_video_preview_dialog import MULTIMEDIA_AVAILABLE, PageVideoPreviewDialog
+
+    assert MULTIMEDIA_AVAILABLE
+    video = ROOT / "dialog" / "preview.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"placeholder")
+    dialog = PageVideoPreviewDialog()
+    assert dialog.size().width() == 900 and dialog.size().height() == 560
+    assert dialog.set_source(str(video))
+    assert dialog.player.source().toLocalFile() == str(video.resolve())
+    assert dialog.play_button.text() in {"播放", "暂停"}
+    assert dialog.replay_button.text() == "重新播放"
+    assert dialog.close_button.text() == "关闭"
+    dialog.close()
+    APP.processEvents()
+    assert dialog.player.source().isEmpty()
 
 
 def test_even_size_cancel_bad_image_and_non_overwrite():
@@ -382,6 +456,8 @@ def test_offscreen_ui_routing():
     assert calls[-1][1]["hold_seconds"] == window.page_hold_spin.value()
     assert calls[-1][1]["turn_seconds"] == window.page_turn_spin.value()
     assert calls[-1][1]["fps"] == window.page_fps_spin.value()
+    assert window.page_direction_combo.currentData() == RIGHT_TO_LEFT
+    assert calls[-1][1]["direction"] == RIGHT_TO_LEFT
 
     video = folder / "dummy.mp4"
     video.write_bytes(b"placeholder")
@@ -475,13 +551,28 @@ def test_offscreen_preview_ui_contract():
             pass
 
     warnings = []
-    infos = []
-    opened = []
+    dialogs = []
+
+    class FakeDialog:
+        def __init__(self, _parent):
+            dialogs.append(self)
+            self.source = None
+            self.opened = False
+
+        def set_source(self, path):
+            self.source = path
+            return True
+
+        def open(self):
+            self.opened = True
+
+        def close(self):
+            pass
+
     with (
         mock.patch.object(page_runner_module, "ImageSequenceVideoRunner", FakePreviewRunner),
         mock.patch.object(QMessageBox, "warning", side_effect=lambda *args: warnings.append(args[2])),
-        mock.patch.object(QMessageBox, "information", side_effect=lambda *args: infos.append(args[2])),
-        mock.patch.object(main_window_module.QDesktopServices, "openUrl", side_effect=lambda url: opened.append(url) or True),
+        mock.patch.object(main_window_module, "PageVideoPreviewDialog", FakeDialog),
     ):
         window._preview_page_turn()
         args, kwargs = calls[-1]
@@ -494,6 +585,8 @@ def test_offscreen_preview_ui_contract():
         assert kwargs["max_output_width"] == 960
         assert kwargs["realism_enabled"] is True
         assert kwargs["realism_strength"] == 63
+        assert kwargs["direction"] == RIGHT_TO_LEFT
+        assert Path(kwargs["page_curl_work_root"]).parent == Path(kwargs["output_path"]).parent
         assert not window.btn_run.isEnabled()
         assert not window.btn_page_preview.isEnabled()
         assert not window.btn_abort.isHidden()
@@ -501,8 +594,9 @@ def test_offscreen_preview_ui_contract():
         window._batch_runner.finished.emit(True, "backend=CPU 平面翻页；encoder=libx264")
         assert window.btn_run.isEnabled() and window.btn_page_preview.isEnabled()
         assert window.btn_abort.isHidden()
-        assert opened and opened[-1].toLocalFile() == kwargs["output_path"]
-        assert infos and "CPU 平面翻页" in infos[-1]
+        assert dialogs and dialogs[-1].source == kwargs["output_path"]
+        assert dialogs[-1].opened
+        assert window.progress_label.text() == "预览已生成"
 
         window._set_batch_running(True, preview=True)
         window._on_preview_finished(False, "页面翻页视频失败：实际错误")
@@ -520,6 +614,9 @@ def test_offscreen_preview_ui_contract():
 def run_tests():
     test_policy_and_natural_sort()
     test_counts_pts_plan_and_transition_geometry()
+    test_page_turn_direction_mirror_contract()
+    test_preview_cache_cleanup_plan_without_deleting()
+    test_offscreen_preview_dialog_contract()
     test_even_size_cancel_bad_image_and_non_overwrite()
     test_real_encoding_and_pts()
     test_static_cache_and_cpu_fallback_call_counts()
