@@ -8,9 +8,7 @@
 
 ## 当前主线状态
 
-（本次迁移时点：全部专项均已收口为「已关闭」或「待确认」，暂无仍在推进中的当前主线项。）
-
----
+（当前没有施工中的主线专项。）
 
 ## 待确认区（等用户裁决：还在做 / 已关闭 / 废弃归档）
 
@@ -26,6 +24,7 @@
 
 ## 已关闭
 
+- 资料导出统一底座、全链 AppleDouble 过滤、永不覆盖、页面翻页视频与 Skills 迁移 ✅ `0611e5d22b2ad882ad3912f4abc7793e3c590cb4` — 验证: PPT/Word 经 LibreOffice 真实导出 1 页 PNG，翻页视频 H.264 样本的 10 FPS、10 帧与单调 PTS 回读通过；CLI 过滤阻断经独立窄复核 CLOSED，两个 Skill 四端链接对账 41 项通过。PowerPoint 原生后端、Windows COM、冻结包与真机交互未验证
 - 拼图缩略图拖动排序 ✅ `3ccabb7a1ceaf2d8714a1d03391a95bf9dab307f` — 验证: `python3 -m py_compile ui/collage_tab.py`、`git diff --check`、`QT_QPA_PLATFORM=offscreen` 冒烟确认拖动重排后文件顺序、排除状态和多来源当前项同步正确；本轮按用户要求未做重打包/全量测试
 - 拼图图片文件夹多来源列表显示修复 ✅ `6b7e66409e7a7f0eb0539a3d651c888c6a566d23` — 验证: `python3 -m py_compile ui/collage_tab.py`、`git diff --check`、`QT_QPA_PLATFORM=offscreen` 冒烟确认多子文件夹导入后来源列表显示且切换可恢复各自行数设置；本轮按用户要求未做重打包/全量测试
 - 拼图导入已导出结果目录误识别修复 ✅ `698da2106d24e727cabc685cd789cf134c36ce75` — 验证: `python3 -m py_compile ui/collage_tab.py`、`git diff --check`、`.tmp/verify_collage_import_skip` 冒烟确认父目录扫描只保留原图且不把带 manifest 的成品子目录列为来源；本轮按用户要求未做重打包/全量测试
