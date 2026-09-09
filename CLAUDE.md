@@ -198,7 +198,9 @@ _RED   = "#FA5151"   # 危险色
 - 独立「资料导出」页面与 CLI `export-material` 负责 PPT/Word 转 PNG，并严格按所选资料类型扫描
 - 视频入口按输入分流：真实视频继续使用 `VideoRunner`；图片或文件夹生成页面序列视频，单图静态，多图在 Mac 上优先使用系统 Core Image 真实曲面卷页，非 Mac 或助手不可用时回退 CPU 平面翻页
 - 页面序列视频复用每页静态合成结果，每组相邻页最多生成 8 张独立曲面帧；Mac 优先使用 VideoToolbox，无法真正打开时回退 libx264
-- 页面图片模式提供「预览翻页」按钮，使用前两张有效页面和首个屏幕模板生成短预览
+- 翻页方向默认为从右向左，可选从左向右；正式导出与预览、CPU 与 Core Image 共用同一方向
+- 页面图片模式提供「预览翻页」按钮，使用前两张有效页面和首个屏幕模板，在 900×560 应用内弹窗循环播放；支持播放、暂停、重新播放和关闭
+- 预览缓存使用专用 `page_preview_cache` 平铺唯一 MP4；启动时通过 no-follow `dir_fd` 只清理直属层超过 24 小时的普通 MP4，不处理目录、符号链接或其他文件
 - 所有扫描入口先过滤隐藏文件、AppleDouble `._*`、Office 临时文件 `~$*` 和非文件项，再执行排序、计数、封面选择、manifest 生成和任务清单组装
 - 拼图、图片合成、真实视频和资料导出每次分配新来源目录；重名时追加 `_2`、`_3`，旧产物不覆盖、不清理
 
@@ -260,7 +262,8 @@ _RED   = "#FA5151"   # 危险色
 - [x] 图片、拼图、真实视频和资料导出统一使用不覆盖目录；根目录直接图片使用所选文件夹名
 - [x] 视频入口支持真实视频与页面序列分流，页面序列采用固定 FPS、递增 PTS 和流式 H.264 编码
 - [x] Mac 页面序列使用系统 `CIPageCurlWithShadowTransition` 生成真实曲面卷页；静态页按模板缓存，每组相邻页最多 8 张独立曲面帧；非 Mac 或助手不可用时回退 CPU 平面翻页
-- [x] 页面图片模式新增「预览翻页」按钮；Mac 打包脚本先编译 Swift 助手并通过 PyInstaller 固定打入 `helpers/page_curl/`，编译失败停止打包
+- [x] 页面图片模式新增「预览翻页」按钮与 900×560 应用内循环播放器，支持播放、暂停、重新播放和关闭；翻页默认从右向左、可选从左向右，正式/预览与 CPU/Core Image 方向一致
+- [x] 预览缓存独立使用 `page_preview_cache` 平铺唯一 MP4，启动时只安全清理直属层超过 24 小时的普通 MP4；Mac 打包脚本先编译 Swift 助手并通过 PyInstaller 固定打入 `helpers/page_curl/`，编译失败停止打包
 - [x] `material-exporter` 与 `ppt-notes-pipeline` 现役 Skill 归融景维护，旧 `ppt-batch-tool` 项目暂停维护
 
 ---
@@ -307,6 +310,7 @@ _RED   = "#FA5151"   # 危险色
 37. **资料类型严格分流**：资料导出页和 `export-material` 的 PPT 模式只接收 PPT，Word 模式只接收 Word；过滤后的清单才进入转换任务。
 38. **验证边界**：已验证 LibreOffice 导出 PPT 1440×1080 1 页、Word 1224×1584 1 页且连续 2 次不覆盖；页面序列为 H.264、10 FPS、96×64、10 帧且 PTS 递增；offscreen GUI 与 41 项 Skill 链接检查通过。PowerPoint 原生后端、Windows COM、冻结包和 GUI 真机交互未验证。
 39. **Core Image 助手的源码与冻结路径**：源码运行从 `build/page_curl/PageCurlRenderer` 加载；PyInstaller 冻结环境从 `sys._MEIPASS/helpers/page_curl/PageCurlRenderer` 加载。Mac 打包必须先执行 `scripts/build_page_curl_helper.sh` 并以 `--add-binary` 打入固定相对目录，编译失败直接停止；Windows 不打包该助手，继续使用 CPU 回退。P1/P2 已验证源码路径的 Core Image 曲面帧、静态缓存、每组相邻页最多 8 帧与 VideoToolbox，冻结 App 和 GUI 真机交互仍待验证。
+40. **翻页预览与缓存边界**：预览在固定 900×560 应用内弹窗循环播放，支持播放、暂停、重新播放和关闭。翻页默认从右向左、可选从左向右，正式导出与预览、CPU 与 Core Image 共用同一方向。预览只在专用 `page_preview_cache` 直属层平铺唯一 MP4；启动清理通过 no-follow `dir_fd` 只移除超过 24 小时的普通 MP4，目录、符号链接和其他文件保持不变。功能见 `fefe3d3`，清理边界窄复核见 `db45103`；真机播放和冻结 App 由用户验证。
 
 ---
 
