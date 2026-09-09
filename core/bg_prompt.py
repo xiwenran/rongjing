@@ -15,7 +15,7 @@ _TRANSLATIONS = {
     "教室场景": "a realistic Chinese classroom or teacher office display template background",
     "文档纸张": "a realistic blank sheet of paper on a desk for document compositing",
     "台式机电脑": "a desktop computer screen template background",
-    "笔记本室内": "a laptop computer indoor desk template background",
+    "笔记本室内": "a close-up handheld night phone photo of a laptop on a modest ordinary home desk",
     "自定义场景": "a realistic custom template background for compositing",
     "笔记本电脑": "a laptop computer (MacBook Pro or Lenovo ThinkPad)",
     "笔记本外接屏": "a laptop with an external monitor on a desk",
@@ -49,7 +49,7 @@ _TRANSLATIONS = {
     "柔光": "soft diffused light",
     "偏暗氛围": "dim moody atmospheric lighting",
     "正面平视": "front eye-level camera angle",
-    "略偏侧角": "slightly side camera angle",
+    "略偏侧角": "camera positioned on the laptop's right side and shooting diagonally left, with the right side closer and the left side farther away",
     "略微仰视": "slightly low-angle camera angle",
     "有植物": "with a small potted plant on the desk",
     "有咖啡杯": "with a coffee cup or tea cup on the desk",
@@ -67,10 +67,10 @@ _TRANSLATIONS = {
 # 填充「环境位置」标签选项，两处含义不同但取值必须同步）。
 _CLASSROOM_SCENES = ["小学教室", "中学教室", "多媒体教室"]
 
-# 与 ui/ai_generate_tab.py 的模块级 _SCREEN_FILL_RANGE 保持逐字一致。
+# GUI 通过 build_prompt 复用此单一规范源，避免另存一份占比常量产生漂移。
 _SCREEN_FILL_RANGE = {
     "教室场景": (55, 75),
-    "笔记本室内": (60, 75),
+    "笔记本室内": (85, 92),
     "台式机电脑": (55, 70),
     "自定义场景": (60, 70),
 }
@@ -141,8 +141,21 @@ def build_prompt(
     # 屏幕类场景：近景硬约束，屏幕占比按场景微调，参考实拍风格基准
     if not is_document and device not in ("纸张区域", "A4 竖版纸", "A4 横版纸"):
         lo, hi = _SCREEN_FILL_RANGE.get(target, (60, 70))
-        parts.append(f"close-up smartphone shot, the screen fills {lo}-{hi}% of the frame")
+        if target == "笔记本室内":
+            parts.append(f"close-up smartphone shot, the screen fills {lo}-{hi}% of the image width")
+        else:
+            parts.append(f"close-up smartphone shot, the screen fills {lo}-{hi}% of the frame")
         parts.append("vertical portrait framing, minimal surrounding environment beyond the immediate close-up context")
+        if target == "笔记本室内":
+            parts.extend([
+                "strict 3:4 vertical portrait image",
+                "the active display area has true 16:9 widescreen proportions in its own plane, never square or 4:3, and remains unmistakably widescreen after perspective",
+                "all four screen corners fully visible; the screen occupies 85-92% of the image width and 43-52% of the image height",
+                "nighttime handheld phone snapshot taken close to the laptop like a casual real user photo",
+                "ordinary modest home or dorm room, plain desk and wall, low-saturation colors, white or warm-white household lamp",
+                "slight sensor noise and mild optical softness, while the screen outline and four corners remain clear",
+                "only a narrow strip of keyboard visible along the bottom edge, with natural low-contrast keycap characters allowed",
+            ])
 
     # Chinese context — classroom vs personal desk
     if is_classroom and not is_document:
@@ -157,7 +170,7 @@ def build_prompt(
         if not is_document:
             parts.append("Chinese domestic or office setting")
             if target == "笔记本室内":
-                parts.append("laptop keyboard and the lower half of the laptop body visible in the lower part of the frame")
+                parts.append("the laptop screen dominates the close framing and only the keyboard's top edge appears at the bottom")
             elif target == "台式机电脑":
                 parts.append("keyboard and mouse visible on the desk in front of the monitor")
         # 桌面摆件（有植物/有咖啡杯/有书本/有小摆件/极简），文档纸张场景沿用原有行为
@@ -168,8 +181,8 @@ def build_prompt(
     if is_document:
         parts.append("paper corners clearly visible, realistic perspective, clean composition")
     elif use_greenscreen:
-        parts.append("the screen displays a solid pure chroma-key green color similar to #00FF00, perfectly flat and uniform across the entire screen surface")
-        parts.append("no gradient, no reflection, no glare, no glossy highlight, no bezel glow on the green screen area")
+        parts.append("the screen displays solid pure chroma-key green #00FF00, perfectly flat and uniform across the entire screen surface")
+        parts.append("no gradient, no reflection, no glare, no glossy highlight, no bezel glow, and no green color spill onto the bezel, keyboard, desk, wall, or nearby objects")
         # 实拍基调里的「整体偏暗」会波及绿幕本身，而绿幕靠颜色分割出角点建模板，
         # 变暗会拉低 G 与 R/B 的比值、削弱检测。这里把绿幕区豁免出来：环境可以暗，
         # 绿幕必须保持明亮饱和。
@@ -190,8 +203,10 @@ def build_prompt(
         parts.append(extra)
 
     # Constraints
-    parts.append("absolutely no English text, signs, diplomas, or labels anywhere in the scene")
-    parts.append("all visible text and signage must be in simplified Chinese only")
+    if target == "笔记本室内":
+        parts.append("no readable environmental words, signs, labels, brand marks, desktop icons, user interface, or fake writing; only natural low-contrast individual keycap characters may appear")
+    else:
+        parts.append("no readable words, signs, diplomas, labels, brand marks, desktop icons, user interface, or fake writing anywhere in the scene")
     parts.append("no text about grades, homework, class names, subjects, schedules, or any academic content visible anywhere")
     parts.append("no watermark, no logo on screen")
     if not is_document:

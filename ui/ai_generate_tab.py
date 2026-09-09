@@ -660,6 +660,11 @@ class AIGenerateTab(QWidget):
             self._decor_group.replace_options(_DESK_DECOR)
         # 绿幕开关只对「有屏幕」的场景有意义，文档纸张场景没有屏幕概念
         self._greenscreen_check.setVisible(target != "文档纸张")
+        if target == "笔记本室内":
+            self._aspect_combo.setCurrentText("3:4")
+            self._aspect_combo.setEnabled(False)
+        else:
+            self._aspect_combo.setEnabled(True)
 
     def _on_device_changed(self, value: str):
         if value in ("希沃白板", "教室大屏", "多媒体大屏"):
