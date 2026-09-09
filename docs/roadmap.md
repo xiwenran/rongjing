@@ -8,12 +8,7 @@
 
 ## 当前主线状态
 
-- 预览弹窗 QtMultimedia 原生崩溃修复 🚧
-  - 当前阶段：用 PyAV 解码短 MP4，改为 QLabel + QTimer 应用内循环播放
-  - 一句话现状：已确认 QtMultimedia 的原生 Metal 视频窗口在弹窗打开时触发 EXC_BAD_ACCESS，开始移除该播放链路
-  - 阻塞：无
-  - 最近验证：崩溃报告主线程栈定位到 AGX Metal → QtMultimedia QVideoWindow::event Expose → NSSheet QDialog.open
-  - commit hash：待实现并验证后补充
+（空）
 
 ## 待确认区（等用户裁决：还在做 / 已关闭 / 废弃归档）
 
@@ -29,6 +24,7 @@
 
 ## 已关闭
 
+- 预览弹窗 QtMultimedia 原生崩溃修复 ✅ `c2df5ed217ed7314061f711292d51845f2461ab1` — 验证: 预览播放完全移除 QtMultimedia/QVideoWindow，改用 PyAV 有界解码（最多 120 帧）与 QImage.copy 持有帧，由 QLabel + QTimer 循环播放；已有短预览 MP4 的 offscreen 实例验证帧加载、循环推进、暂停、重播与关闭释放均通过，`py_compile`、零残留检索和 `git diff --check` 通过；未运行真机窗口、Core Image、长视频、打包或全量测试
 - 翻页预览弹窗、方向设置与 24 小时缓存清理 ✅ `fefe3d3a563070f6216b1962e9916173a6ece564`、`db451032d05b44d389efd14312fcd84b3efa686e` — 验证: 900×560 应用内循环播放器支持播放、暂停、重新播放和关闭；默认右→左、可选左→右，正式导出与预览、CPU 与 Core Image 方向一致；专用 `page_preview_cache` 平铺唯一 MP4，启动时仅通过 no-follow `dir_fd` 清理直属层超过 24 小时的普通 MP4，目录、符号链接和其他文件不处理；独立审查阻断项窄复核 CLOSED。真机播放与冻结 App 由用户验证
 - 笔记本室内 3:4 真实场景模板重制 ✅ `e006bf2` — 验证: 6 个 `20260909-laptop-indoor-dark-*` 运行模板均为 `1086×1448`、绿幕四角未碰边，最终覆盖暖光书桌、冷白宿舍、雨夜窗边、旧衣柜、厨房餐桌和阳台窗帘六类场景；指定「二上数学早读」页面经 `cli.py process` 实际输出 6 张 JPEG，联系图确认内容落位；默认提示词的 3:4、16:9、右侧向左轻微斜拍和无绿幕溢光断言通过。本轮按用户要求未重打包或执行全量测试
 - Mac Core Image 曲面翻页与页面视频加速 ✅ `8fe722302841783c0a81213c1b3faa6b4ed41550` — 验证: 系统 `CIPageCurlWithShadowTransition` 真实输出卷边、背面与阴影三帧；正式 runner 回读 Core Image + `h264_videotoolbox`、10 帧 PTS 递增，静态页每模板每页只合成一次，前两页预览已接入；独立审查两项阻断窄复核 CLOSED。实际冻结 App 与 GUI 真机操作由用户自行验证
