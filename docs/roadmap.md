@@ -8,7 +8,6 @@
 
 ## 当前主线状态
 
-
 ## 待确认区（等用户裁决：还在做 / 已关闭 / 废弃归档）
 
 （空——2026-07-21 用户裁决 V3.8 三列布局已完工，转入已关闭区。）
@@ -23,6 +22,7 @@
 
 ## 已关闭
 
+- 页面视频音乐库与随机配乐 ✅ `328e2e0cc1d3f20b80e4c63fa9927aae1559e8c2` — 验证: App Data 固定 `融景/music/` 支持音频、文件夹和视频首音轨导入且按 SHA-256 去重；页面视频支持不配乐/固定/随机、默认 35% 音量、1 秒起点、短音频同曲循环和 48 kHz 双声道 AAC，随机实际曲目进入完成回执；真实视频原声不变，预览视频含 BGM 但弹窗当前只看画面；独立审查 PASS WITH RISKS。AAC 尾垫与未持久 sidecar 为非阻断风险，真机听感、长音频和冻结 App 未验证
 - 页面视频占位文件误判修复 ✅ `19ea8dc799fb1476879a8cb52b5882bb868a3ce1` — 验证: 正式输出不再预建 0 字节 final，编码 attempt 经不覆盖发布后落为最终 MP4；macOS 优先 `renamex_np(RENAME_EXCL)`，ExFAT `ENOTSUP` 时改用 `O_CREAT|O_EXCL` 独占创建并流式写入，目标冲突不覆盖且保留 attempt；`_test_output_paths.py` 10/10 与 `_test_page_video_runner.py` 全部通过，独立审查原 TOCTOU 阻断已消除并补齐 ExFAT 阻断。本轮未跑 35 页×6 模板、真实 ExFAT 写入或打包
 - PowerPoint 固定授权中转与副本清理 ✅ `251d0246dde9dc00464dc877e2f7975edd69935d`、`115bdf6137f0564d4fc2f13eb0bc57a3c3cd157a`、`3b31ad10d758e7d9bc250e3278fa7ad1eb7dc621` — 验证: 固定 `~/Documents/融景Office中转/` 复制而不移动原 PPT，PowerPoint 打开/输出同根；成功或正常失败按 manifest 精确清理本批副本/PDF，崩溃残留严格超过 24 小时启动清理；固定根 `0700`，no-follow、`dir_fd`、quarantine、inode + size 及复制 SHA-256 + size 校验已覆盖，LibreOffice 不变；独立阻断项窄复核 CLOSED。首次授权固定根一次的预期、授权持久性、PowerPoint 真机与冻结 App 由用户验证
 - 笔记本室内开放式随机场景默认提示词 ✅ `a54d2fc` — 验证: `bg-prompt` 定向断言确认开放随机环境、多图缩略图区分、示例非固定列表、4°–7° 右侧向左轻微角度、3:4/16:9 和无绿幕溢光均生效；教室场景不含该随机段落；用户已用实际样图确认视觉方向。教师资产库笔记链路同步直接继承融景默认 prompt
