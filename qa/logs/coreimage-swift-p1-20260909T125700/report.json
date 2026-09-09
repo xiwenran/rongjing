@@ -1,0 +1,20 @@
+{
+  "task_id": "RJ-CI-P1-SWIFT",
+  "verification_level": "V2",
+  "status": "success",
+  "filter": "CIPageCurlWithShadowTransition",
+  "manifest": "~/rongjing/qa/logs/coreimage-swift-p1-20260909T125700/manifest.json",
+  "frames": [
+    "~/rongjing/qa/logs/coreimage-swift-p1-20260909T125700/frame_0000.png",
+    "~/rongjing/qa/logs/coreimage-swift-p1-20260909T125700/frame_0001.png",
+    "~/rongjing/qa/logs/coreimage-swift-p1-20260909T125700/frame_0002.png"
+  ],
+  "size": [640, 360],
+  "source_to_first_mean_abs": 0.0,
+  "target_to_last_mean_abs": 0.0,
+  "middle_to_first_mean_abs": 21.433347800925926,
+  "middle_to_last_mean_abs": 18.678537326388888,
+  "middle_unique_colors": 762,
+  "visual_check": "中间帧存在曲面卷边、白色背面、折痕明暗与阴影，不是简单切换。",
+  "uncovered_risks": ["尚未接入页面视频 runner", "尚未验证冻结包"]
+}
