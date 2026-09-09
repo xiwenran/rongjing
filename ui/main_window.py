@@ -36,6 +36,8 @@ from core.page_preview_cache import (
     preview_cache_root,
 )
 from core.office_staging import cleanup_expired_powerpoint_staging
+from core.music_library import MusicLibrary
+from ui.music_library_dialog import BackgroundMusicCard
 from ui.page_video_preview_dialog import PageVideoPreviewDialog
 from core.ai_background import normalize_base_url
 from core.screen_detector import detect_screen_points, detect_green_screen_points
@@ -615,6 +617,7 @@ class MainWindow(QMainWindow):
         # Per-picker last-used directories — persisted across sessions via QSettings
         _home = os.path.expanduser("~")
         self._settings = QSettings("融景", "RongJing")
+        self._music_library = MusicLibrary(os.path.join(self._app_data_dir, "music"))
         self._last_dir_bg      = self._settings.value("last_dir_bg",      _home)
         self._last_dir_preview = self._settings.value("last_dir_preview",  _home)
         self._last_dir_input   = self._settings.value("last_dir_input",    _home)
@@ -1086,6 +1089,12 @@ class MainWindow(QMainWindow):
         self.page_direction_combo.currentIndexChanged.connect(self._save_page_video_settings)
         self._page_video_settings_widget.hide()
         fvi.addWidget(self._page_video_settings_widget)
+        self._background_music_card = BackgroundMusicCard(
+            self._settings,
+            self._music_library,
+        )
+        self._background_music_card.hide()
+        fvi.addWidget(self._background_music_card)
         c1_video.hide(); fv.addWidget(c1_video)
 
         self._c1_folder = c1_folder
@@ -2075,6 +2084,7 @@ class MainWindow(QMainWindow):
         self._format_row_widget.setVisible(idx != 2)  # no format selector for video
         self._batch_diversify.setVisible(idx != 2)
         self._sync_page_preview_state()
+        self._sync_page_music_state()
         # Update hint to match current mode
         if idx == 0:
             self._c2_hint.setText("每行独立选择模板，或点「统一选模板」批量设置所有行。")
@@ -2381,6 +2391,7 @@ class MainWindow(QMainWindow):
         self._video_input_kind = input_kind
         self._page_video_settings_widget.setVisible(input_kind == "image")
         self._sync_page_preview_state()
+        self._sync_page_music_state()
         if input_kind == "image":
             page_paths = normalize_page_paths(paths)
             if not page_paths:
@@ -2388,6 +2399,7 @@ class MainWindow(QMainWindow):
                 self._video_input_kind = None
                 self._page_video_settings_widget.hide()
                 self._sync_page_preview_state()
+                self._sync_page_music_state()
                 return
             source_name = (
                 os.path.basename(os.path.normpath(paths[0]))
@@ -2437,6 +2449,12 @@ class MainWindow(QMainWindow):
         visible = self._batch_mode == 2 and self._video_input_kind == "image"
         self.btn_page_preview.setVisible(visible)
         self.btn_page_preview.setEnabled(visible and not self._batch_running)
+
+    def _sync_page_music_state(self):
+        visible = self._batch_mode == 2 and self._video_input_kind == "image"
+        self._background_music_card.setVisible(visible)
+        if visible:
+            self._background_music_card.refresh_library()
 
     def _set_batch_running(self, running: bool, *, preview: bool = False):
         self._batch_running = running
@@ -2504,11 +2522,19 @@ class MainWindow(QMainWindow):
             output_path=self._preview_output_path,
             max_output_width=960,
             direction=self.page_direction_combo.currentData() or RIGHT_TO_LEFT,
+            music_library=self._music_library,
+            music_mode=self._background_music_card.mode,
+            music_selected_ids=self._background_music_card.selected_ids,
+            music_volume=self._background_music_card.volume,
         )
         self._batch_runner.progress.connect(self._on_progress)
         self._batch_runner.finished.connect(self._on_preview_finished)
         self._set_batch_running(True, preview=True)
-        self.progress_label.setText("正在生成翻页预览…")
+        preview_music_note = (
+            "；预览弹窗当前仅看画面，成品含配乐"
+            if self._background_music_card.mode != "none" else ""
+        )
+        self.progress_label.setText(f"正在生成翻页预览…{preview_music_note}")
         self._batch_runner.start()
 
     def _run_batch(self):
@@ -2603,6 +2629,10 @@ class MainWindow(QMainWindow):
                 realism_enabled=self._realism_enabled,
                 realism_strength=self._realism_strength,
                 direction=self.page_direction_combo.currentData() or RIGHT_TO_LEFT,
+                music_library=self._music_library,
+                music_mode=self._background_music_card.mode,
+                music_selected_ids=self._background_music_card.selected_ids,
+                music_volume=self._background_music_card.volume,
             )
         else:
             from core.batch_runner import VideoRunner
@@ -2633,7 +2663,10 @@ class MainWindow(QMainWindow):
     def _on_preview_finished(self, success, msg):
         preview_path = self._preview_output_path
         self._set_batch_running(False)
-        self.progress_label.setText("预览已生成" if success else "预览生成失败")
+        if success and self._background_music_card.mode != "none":
+            self.progress_label.setText("预览已生成；预览弹窗当前仅看画面，成品含配乐")
+        else:
+            self.progress_label.setText("预览已生成" if success else "预览生成失败")
         if success and preview_path and os.path.isfile(preview_path):
             if self._page_preview_dialog:
                 self._page_preview_dialog.close()

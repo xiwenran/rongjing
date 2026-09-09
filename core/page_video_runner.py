@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import secrets
 import sys
 import tempfile
 import time
@@ -25,6 +26,7 @@ from core.core_image_page_curl import (
     render_batch,
 )
 from core.image_processor import embed_image_pil, embed_image_pil_fast, precompute_template_cache
+from core.music_library import MusicLibrary, MusicLibraryError
 from core.output_paths import (
     allocate_unique_directory,
     allocate_unique_file,
@@ -36,6 +38,8 @@ from core.realism_filter import apply_realism, precompute_realism
 
 MAX_CURVE_FRAMES = 8
 PROGRESS_INTERVAL_SECONDS = 0.15
+AUDIO_SAMPLE_RATE = 48_000
+AUDIO_START_SECONDS = 1.0
 
 
 def classify_media_paths(paths: Sequence[str]) -> str:
@@ -241,6 +245,10 @@ class ImageSequenceVideoRunner(QThread):
         max_output_width: int | None = None,
         direction: str = RIGHT_TO_LEFT,
         page_curl_work_root: str | os.PathLike[str] | None = None,
+        music_library: MusicLibrary | None = None,
+        music_mode: str = "none",
+        music_selected_ids: Sequence[str] = (),
+        music_volume: int = 35,
         parent=None,
     ):
         """Tasks are ``(source_name, page_paths, screen_templates)`` tuples."""
@@ -255,6 +263,10 @@ class ImageSequenceVideoRunner(QThread):
         self.max_output_width = int(max_output_width) if max_output_width else None
         self.direction = normalize_direction(direction)
         self.page_curl_work_root = page_curl_work_root
+        self.music_library = music_library
+        self.music_mode = str(music_mode)
+        self.music_selected_ids = list(music_selected_ids)
+        self.music_volume = min(100, max(0, int(music_volume)))
         if self.output_path:
             if len(self.tasks) != 1 or len(self.tasks[0][2]) != 1:
                 raise ValueError("明确输出文件只支持一个页面来源和一个模板")
@@ -276,6 +288,9 @@ class ImageSequenceVideoRunner(QThread):
         self.work_dirs: list[str] = []
         self.actual_backends: list[str] = []
         self.actual_encoders: list[str] = []
+        self.actual_music: list[dict] = []
+        self._music_pool: list[dict] = []
+        self._music_random = secrets.SystemRandom()
         self._last_progress_at = 0.0
 
     def abort(self):
@@ -286,6 +301,35 @@ class ImageSequenceVideoRunner(QThread):
         if force or done >= total or now - self._last_progress_at >= PROGRESS_INTERVAL_SECONDS:
             self.progress.emit(done, total, message)
             self._last_progress_at = now
+
+    def _resolve_music_pool(self) -> list[dict]:
+        if self.music_mode == "none":
+            return []
+        if self.music_mode not in {"fixed", "random"}:
+            raise ValueError(f"不支持的配乐模式：{self.music_mode}")
+        if self.music_library is None:
+            raise MusicLibraryError("已选择配乐，但音乐库不可用")
+        selected_ids = list(dict.fromkeys(
+            track_id for track_id in self.music_selected_ids
+            if isinstance(track_id, str) and track_id
+        ))
+        if self.music_mode == "fixed" and len(selected_ids) != 1:
+            raise MusicLibraryError("固定配乐必须选择 1 个有效音乐库 ID")
+        if self.music_mode == "random" and not selected_ids:
+            raise MusicLibraryError("随机配乐池为空")
+        tracks = self.music_library.resolve_tracks(selected_ids)
+        if self.music_mode == "fixed" and len(tracks) != 1:
+            raise MusicLibraryError("固定配乐必须解析到 1 首有效音乐")
+        if self.music_mode == "random" and not tracks:
+            raise MusicLibraryError("随机配乐池没有有效音乐")
+        return tracks
+
+    def _choose_music_track(self) -> dict | None:
+        if not self._music_pool:
+            return None
+        if self.music_mode == "fixed":
+            return self._music_pool[0]
+        return self._music_random.choice(self._music_pool)
 
     @staticmethod
     def _load_pages(paths: Sequence[str]) -> tuple[list[Image.Image], list[str]]:
@@ -435,6 +479,8 @@ class ImageSequenceVideoRunner(QThread):
                     for index in mapping:
                         yield transition_frames[page_index][index]
 
+        music_track = self._choose_music_track()
+
         selected = select_encoder(*target_size, self.fps)
         attempts = [selected]
         if selected[0] == "h264_videotoolbox":
@@ -458,6 +504,7 @@ class ImageSequenceVideoRunner(QThread):
                     done=done,
                     total=total,
                     progress_message=f"{source_name} → {template.name}",
+                    music_track=music_track,
                 )
             except Exception as exc:
                 last_error = exc
@@ -475,6 +522,12 @@ class ImageSequenceVideoRunner(QThread):
                     attempt_path, output_path.parent, output_path.name
                 )
             self.output_paths.append(str(published_path))
+            if music_track is not None:
+                self.actual_music.append({
+                    "output_path": str(published_path),
+                    "track_id": music_track["id"],
+                    "display_name": music_track.get("display_name") or "未命名音乐",
+                })
             return done + encoded_count, codec_name, str(published_path)
 
         raise RuntimeError(f"VideoToolbox 编码失败：{last_error}")
@@ -492,6 +545,7 @@ class ImageSequenceVideoRunner(QThread):
         done: int,
         total: int,
         progress_message: str,
+        music_track: dict | None = None,
     ) -> int:
         """Encode one replayable frame-plan attempt; callers retain failed artifacts."""
         import av
@@ -507,6 +561,10 @@ class ImageSequenceVideoRunner(QThread):
                 stream.options = codec_options
             if "bit_rate" in codec_attrs:
                 stream.codec_context.bit_rate = codec_attrs["bit_rate"]
+            audio_stream = None
+            if music_track is not None:
+                audio_stream = container.add_stream("aac", rate=AUDIO_SAMPLE_RATE)
+                audio_stream.layout = "stereo"
 
             for output_frame in frames:
                 if self._abort:
@@ -523,11 +581,97 @@ class ImageSequenceVideoRunner(QThread):
             if not self._abort:
                 for packet in stream.encode():
                     container.mux(packet)
+                if music_track is not None:
+                    self._encode_bgm(
+                        container,
+                        audio_stream,
+                        music_track,
+                        target_samples=round(encoded_count * AUDIO_SAMPLE_RATE / self.fps),
+                    )
         return encoded_count
+
+    def _iter_bgm_frames(self, track: dict, target_samples: int):
+        """Decode from 1.0 s and replay the same source until the exact sample target."""
+        import av
+
+        remaining = int(target_samples)
+        audio_pts = 0
+        skip_samples = round(AUDIO_START_SECONDS * AUDIO_SAMPLE_RATE)
+        gain = self.music_volume / 100.0
+        time_base = Fraction(1, AUDIO_SAMPLE_RATE)
+        while remaining > 0:
+            produced_this_cycle = 0
+            with av.open(track["path"], mode="r") as source:
+                streams = list(source.streams.audio)
+                if not streams:
+                    raise MusicLibraryError(f"配乐无法解码：{track.get('display_name') or track['id']}")
+                resampler = av.AudioResampler(
+                    format="fltp", layout="stereo", rate=AUDIO_SAMPLE_RATE
+                )
+                skip = skip_samples
+                decoded_frames = source.decode(streams[0])
+                for decoded in decoded_frames:
+                    for converted in _resampled_audio_frames(resampler.resample(decoded)):
+                        samples = converted.to_ndarray()
+                        if skip:
+                            dropped = min(skip, samples.shape[1])
+                            samples = samples[:, dropped:]
+                            skip -= dropped
+                        if not samples.shape[1]:
+                            continue
+                        take = min(remaining, samples.shape[1])
+                        samples = (samples[:, :take] * gain).copy()
+                        output = av.AudioFrame.from_ndarray(
+                            samples, format="fltp", layout="stereo"
+                        )
+                        output.sample_rate = AUDIO_SAMPLE_RATE
+                        output.pts = audio_pts
+                        output.time_base = time_base
+                        audio_pts += take
+                        remaining -= take
+                        produced_this_cycle += take
+                        yield output
+                        if remaining == 0:
+                            return
+                for converted in _resampled_audio_frames(resampler.resample(None)):
+                    samples = converted.to_ndarray()
+                    if skip:
+                        dropped = min(skip, samples.shape[1])
+                        samples = samples[:, dropped:]
+                        skip -= dropped
+                    if not samples.shape[1]:
+                        continue
+                    take = min(remaining, samples.shape[1])
+                    samples = (samples[:, :take] * gain).copy()
+                    output = av.AudioFrame.from_ndarray(
+                        samples, format="fltp", layout="stereo"
+                    )
+                    output.sample_rate = AUDIO_SAMPLE_RATE
+                    output.pts = audio_pts
+                    output.time_base = time_base
+                    audio_pts += take
+                    remaining -= take
+                    produced_this_cycle += take
+                    yield output
+                    if remaining == 0:
+                        return
+            if produced_this_cycle == 0:
+                raise MusicLibraryError(
+                    f"配乐从第 1 秒开始后没有可用音频：{track.get('display_name') or track['id']}"
+                )
+
+    def _encode_bgm(self, container, audio_stream, track: dict, *, target_samples: int) -> None:
+        for frame in self._iter_bgm_frames(track, target_samples):
+            for packet in audio_stream.encode(frame):
+                container.mux(packet)
+        for packet in audio_stream.encode(None):
+            container.mux(packet)
 
     def run(self):
         try:
             import av
+
+            self._music_pool = self._resolve_music_pool()
 
             prepared = []
             total = 0
@@ -584,10 +728,24 @@ class ImageSequenceVideoRunner(QThread):
             self._emit_progress(done, total, "页面翻页视频完成", force=True)
             backend_text = "；".join(backend_notes)
             encoder_text = ", ".join(sorted(set(encoder_names))) or "无"
+            result_details = f"backend={backend_text}；encoder={encoder_text}"
+            if self.actual_music:
+                result_details += "；配乐=" + "；".join(
+                    f"{item['track_id']}（{item['display_name']}）"
+                    for item in self.actual_music
+                )
             self.finished.emit(
                 True,
-                f"页面翻页视频完成{skipped_text}。backend={backend_text}；encoder={encoder_text}。"
+                f"页面翻页视频完成{skipped_text}。{result_details}。"
                 f"实际输出：\n{paths_text}",
             )
         except Exception as exc:
             self.finished.emit(False, f"页面翻页视频失败：{exc}；半成品已保留")
+
+
+def _resampled_audio_frames(value):
+    if value is None:
+        return ()
+    if isinstance(value, list):
+        return value
+    return (value,)

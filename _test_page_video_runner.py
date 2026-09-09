@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import math
 import os
+import struct
 import subprocess
 import uuid
+import wave
 from pathlib import Path
 from unittest import mock
 
@@ -27,10 +31,15 @@ from core.page_video_runner import (
 )
 from core.core_image_page_curl import LEFT_TO_RIGHT, RIGHT_TO_LEFT, normalize_direction
 from core.page_preview_cache import allocate_preview_file, cleanup_expired_preview_cache
+from core.music_library import MusicLibrary
 from models.template_model import Template
 
 
-ROOT = Path(__file__).parent / "qa" / "logs" / f"coreimage-preview-p3-{uuid.uuid4().hex}"
+BGM_RUN_ID = os.environ.get("RJ_BGM_M3_RUN_ID")
+ROOT = Path(__file__).parent / "qa" / "logs" / (
+    f"page-video-bgm-m3-{BGM_RUN_ID}"
+    if BGM_RUN_ID else f"coreimage-preview-p3-{uuid.uuid4().hex}"
+)
 ROOT.mkdir(parents=True)
 os.environ["RONGJING_PAGE_CURL_CACHE_DIR"] = str(ROOT / "work-cache")
 APP = QApplication.instance() or QApplication([])
@@ -67,6 +76,135 @@ def run_runner(runner: ImageSequenceVideoRunner):
     runner.run()
     assert result, "Runner 未发出 finished 信号"
     return result
+
+
+def make_bgm_wav(path: Path, *, frequency: float) -> None:
+    """Write 1 s silence plus 0.25 s tone so a 2.4 s output must loop."""
+    sample_rate = 48_000
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        samples = []
+        for index in range(round(sample_rate * 1.25)):
+            value = 0 if index < sample_rate else round(
+                18_000 * math.sin(2 * math.pi * frequency * (index - sample_rate) / sample_rate)
+            )
+            samples.append(struct.pack("<h", value))
+        output.writeframes(b"".join(samples))
+
+
+def test_bgm_m3_real_mux_random_none_and_invalid_id():
+    import core.page_video_runner as module
+
+    pages = make_pages(ROOT / "pages", colors=((220, 40, 40), (40, 80, 220)), size=(96, 64))
+    template = make_template(ROOT / "template", size=(96, 64))
+    library = MusicLibrary(ROOT / "music-library")
+    first_wav = ROOT / "tone-a.wav"
+    second_wav = ROOT / "tone-b.wav"
+    make_bgm_wav(first_wav, frequency=440.0)
+    make_bgm_wav(second_wav, frequency=880.0)
+    first = library.import_audio(first_wav)["track"]
+    second = library.import_audio(second_wav)["track"]
+
+    output = ROOT / "output"
+    output.mkdir()
+    runner = ImageSequenceVideoRunner(
+        [("两页短样本", pages, [template])],
+        str(output),
+        hold_seconds=1.1,
+        turn_seconds=0.2,
+        fps=10,
+        realism_enabled=False,
+        music_library=library,
+        music_mode="random",
+        music_selected_ids=[first["id"], second["id"]],
+        music_volume=35,
+    )
+    with (
+        mock.patch.object(module, "availability", return_value=(False, "M3 CPU 小样")),
+        mock.patch.object(module, "select_encoder", return_value=("libx264", {"crf": "18", "preset": "veryfast"}, {})),
+        mock.patch.object(runner._music_random, "choice", side_effect=lambda pool: pool[1]) as choice_mock,
+    ):
+        result = run_runner(runner)
+    assert result["success"], result["message"]
+    assert choice_mock.call_count == 1
+    assert runner.actual_music == [{
+        "output_path": runner.output_paths[0],
+        "track_id": second["id"],
+        "display_name": second["display_name"],
+    }]
+    assert second["id"] in result["message"] and second["display_name"] in result["message"]
+
+    bgm_video = Path(runner.output_paths[0])
+    with av.open(str(bgm_video)) as container:
+        assert len(container.streams.video) == 1
+        assert len(container.streams.audio) == 1
+        video_stream = container.streams.video[0]
+        audio_stream = container.streams.audio[0]
+        assert audio_stream.codec_context.name == "aac"
+        video_frames = list(container.decode(video_stream))
+    with av.open(str(bgm_video)) as container:
+        audio_frames = list(container.decode(container.streams.audio[0]))
+    assert len(video_frames) == 24
+    decoded_samples = sum(frame.samples for frame in audio_frames)
+    target_samples = round(len(video_frames) * 48_000 / 10)
+    assert abs(decoded_samples - target_samples) <= 1024, (decoded_samples, target_samples)
+    audio_peak = max(float(abs(frame.to_ndarray()).max()) for frame in audio_frames)
+    assert audio_peak > 0.05, audio_peak
+    assert audio_frames[0].pts is not None and audio_peak < 0.5
+    assert decoded_samples > round((second["duration"] - 1.0) * 48_000) * 2
+
+    no_output = ROOT / "no-output"
+    no_output.mkdir()
+    no_runner = ImageSequenceVideoRunner(
+        [("无配乐", pages[:1], [template])],
+        str(no_output), hold_seconds=0.2, turn_seconds=0.1, fps=10,
+        realism_enabled=False, music_mode="none",
+    )
+    with (
+        mock.patch.object(module, "availability", return_value=(False, "M3 CPU 小样")),
+        mock.patch.object(module, "select_encoder", return_value=("libx264", {"crf": "18", "preset": "veryfast"}, {})),
+    ):
+        no_result = run_runner(no_runner)
+    assert no_result["success"], no_result["message"]
+    with av.open(no_runner.output_paths[0]) as container:
+        assert len(container.streams.audio) == 0
+
+    invalid_runner = ImageSequenceVideoRunner(
+        [("失效 ID", pages[:1], [template])],
+        str(ROOT / "invalid-output"),
+        hold_seconds=0.2, turn_seconds=0.1, fps=10,
+        realism_enabled=False,
+        music_library=library,
+        music_mode="fixed",
+        music_selected_ids=["missing-track-id"],
+    )
+    invalid_result = run_runner(invalid_runner)
+    assert not invalid_result["success"] and "配乐 ID 已失效" in invalid_result["message"]
+    assert invalid_runner.output_paths == []
+
+    manifest = {
+        "task_id": "RJ-BGM-M3",
+        "video": str(bgm_video.relative_to(ROOT)),
+        "video_frames": len(video_frames),
+        "video_seconds": len(video_frames) / 10,
+        "audio_codec": "aac",
+        "audio_samples": decoded_samples,
+        "target_samples": target_samples,
+        "audio_peak": audio_peak,
+        "selected_track": runner.actual_music[0],
+        "checks": {
+            "start_at_one_second": "passed_non_silent_start_after_silent_first_second",
+            "short_audio_loop": "passed",
+            "random_record": "passed",
+            "none_has_no_audio": "passed",
+            "invalid_id_fails": "passed",
+        },
+    }
+    (ROOT / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def test_policy_and_natural_sort():
@@ -566,6 +704,9 @@ def test_offscreen_ui_routing():
     template = make_template(folder)
     template_key = window.tm.save(template)
     window._video_row_selections = {0: [template_key]}
+    window._background_music_card._mode = "random"
+    window._background_music_card._selected_ids = ["track-a", "track-b"]
+    window._background_music_card._volume = 42
     output = folder / "output"
     output.mkdir()
 
@@ -598,6 +739,10 @@ def test_offscreen_ui_routing():
     assert calls[-1][1]["fps"] == window.page_fps_spin.value()
     assert window.page_direction_combo.currentData() == RIGHT_TO_LEFT
     assert calls[-1][1]["direction"] == RIGHT_TO_LEFT
+    assert calls[-1][1]["music_library"] is window._music_library
+    assert calls[-1][1]["music_mode"] == "random"
+    assert calls[-1][1]["music_selected_ids"] == ["track-a", "track-b"]
+    assert calls[-1][1]["music_volume"] == 42
 
     video = folder / "dummy.mp4"
     video.write_bytes(b"placeholder")
@@ -614,6 +759,7 @@ def test_offscreen_ui_routing():
     assert "hold_seconds" not in calls[-1][1]
     assert "turn_seconds" not in calls[-1][1]
     assert "fps" not in calls[-1][1]
+    assert "music_mode" not in calls[-1][1]
 
     warnings = []
     original_warning = QMessageBox.warning
@@ -659,6 +805,9 @@ def test_offscreen_preview_ui_contract():
     screen.name = "屏幕模板"
     screen_key = window.tm.save(screen)
     window._video_row_selections = {0: [paper_key, screen_key]}
+    window._background_music_card._mode = "fixed"
+    window._background_music_card._selected_ids = ["preview-track"]
+    window._background_music_card._volume = 35
     window.realism_check.setChecked(True)
     window.realism_strength_spin.setValue(63)
 
@@ -726,6 +875,10 @@ def test_offscreen_preview_ui_contract():
         assert kwargs["realism_enabled"] is True
         assert kwargs["realism_strength"] == 63
         assert kwargs["direction"] == RIGHT_TO_LEFT
+        assert kwargs["music_library"] is window._music_library
+        assert kwargs["music_mode"] == "fixed"
+        assert kwargs["music_selected_ids"] == ["preview-track"]
+        assert kwargs["music_volume"] == 35
         preview_path = Path(kwargs["output_path"])
         assert preview_path.parent == window._preview_cache_root
         assert preview_path.name.startswith("page-turn-preview-") and preview_path.suffix == ".mp4"
@@ -739,7 +892,7 @@ def test_offscreen_preview_ui_contract():
         assert window.btn_abort.isHidden()
         assert dialogs and dialogs[-1].source == kwargs["output_path"]
         assert dialogs[-1].opened
-        assert window.progress_label.text() == "预览已生成"
+        assert window.progress_label.text() == "预览已生成；预览弹窗当前仅看画面，成品含配乐"
 
         window._set_batch_running(True, preview=True)
         window._on_preview_finished(False, "页面翻页视频失败：实际错误")
@@ -780,4 +933,10 @@ def run_tests():
 
 
 if __name__ == "__main__":
-    run_tests()
+    if BGM_RUN_ID:
+        test_bgm_m3_real_mux_random_none_and_invalid_id()
+        test_offscreen_ui_routing()
+        test_offscreen_preview_ui_contract()
+        print(f"RJ-BGM-M3 V2 tests passed; evidence={ROOT.name}")
+    else:
+        run_tests()

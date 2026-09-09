@@ -202,6 +202,7 @@ _RED   = "#FA5151"   # 危险色
 - 翻页方向默认为从右向左，可选从左向右；正式导出与预览、CPU 与 Core Image 共用同一方向
 - 页面图片模式提供「预览翻页」按钮，使用前两张有效页面和首个屏幕模板，在 900×560 应用内弹窗循环播放；支持播放、暂停、重新播放和关闭
 - 预览缓存使用专用 `page_preview_cache` 平铺唯一 MP4；启动时通过 no-follow `dir_fd` 只清理直属层超过 24 小时的普通 MP4，不处理目录、符号链接或其他文件
+- 音乐库固定存放于 App Data 的 `融景/music/`，支持音频、文件夹、视频导入；视频仅提取首音轨不保存画面，SHA-256 去重。页面视频支持不配乐/固定/随机，默认音量 35%，从第 1 秒起、短音频同曲循环、48 kHz 双声道 AAC；随机实际曲目进入完成回执，真实视频原声不变，预览视频含 BGM 但弹窗当前只看画面
 - 所有扫描入口先过滤隐藏文件、AppleDouble `._*`、Office 临时文件 `~$*` 和非文件项，再执行排序、计数、封面选择、manifest 生成和任务清单组装
 - 拼图、图片合成、真实视频和资料导出每次分配新来源目录；重名时追加 `_2`、`_3`，旧产物不覆盖、不清理
 
@@ -266,6 +267,7 @@ _RED   = "#FA5151"   # 危险色
 - [x] Mac 页面序列使用系统 `CIPageCurlWithShadowTransition` 生成真实曲面卷页；静态页按模板缓存，每组相邻页最多 8 张独立曲面帧；非 Mac 或助手不可用时回退 CPU 平面翻页
 - [x] 页面图片模式新增「预览翻页」按钮与 900×560 应用内循环播放器，支持播放、暂停、重新播放和关闭；翻页默认从右向左、可选从左向右，正式/预览与 CPU/Core Image 方向一致
 - [x] 预览缓存独立使用 `page_preview_cache` 平铺唯一 MP4，启动时只安全清理直属层超过 24 小时的普通 MP4；Mac 打包脚本先编译 Swift 助手并通过 PyInstaller 固定打入 `helpers/page_curl/`，编译失败停止打包
+- [x] 音乐库与页面视频配乐：App Data 固定音乐库、音频/文件夹/视频首音轨导入、SHA-256 去重；页面视频不配乐/固定/随机、35% 默认音量、1 秒起点、同曲循环与 48 kHz 双声道 AAC，完成回执记录随机实际曲目
 - [x] `material-exporter` 与 `ppt-notes-pipeline` 现役 Skill 归融景维护，旧 `ppt-batch-tool` 项目暂停维护
 
 ---
@@ -314,6 +316,7 @@ _RED   = "#FA5151"   # 危险色
 39. **Core Image 助手的源码与冻结路径**：源码运行从 `build/page_curl/PageCurlRenderer` 加载；PyInstaller 冻结环境从 `sys._MEIPASS/helpers/page_curl/PageCurlRenderer` 加载。Mac 打包必须先执行 `scripts/build_page_curl_helper.sh` 并以 `--add-binary` 打入固定相对目录，编译失败直接停止；Windows 不打包该助手，继续使用 CPU 回退。P1/P2 已验证源码路径的 Core Image 曲面帧、静态缓存、每组相邻页最多 8 帧与 VideoToolbox，冻结 App 和 GUI 真机交互仍待验证。
 40. **翻页预览与缓存边界**：预览在固定 900×560 应用内弹窗循环播放，支持播放、暂停、重新播放和关闭。翻页默认从右向左、可选从左向右，正式导出与预览、CPU 与 Core Image 共用同一方向。预览只在专用 `page_preview_cache` 直属层平铺唯一 MP4；启动清理通过 no-follow `dir_fd` 只移除超过 24 小时的普通 MP4，目录、符号链接和其他文件保持不变。功能见 `fefe3d3`，清理边界窄复核见 `db45103`；真机播放和冻结 App 由用户验证。
 41. **PowerPoint 固定授权中转**：macOS PowerPoint 只在 `~/Documents/融景Office中转/` 复制副本、打开文件并接收 PDF，不移动原件。正常结束按 manifest 精确清理本批副本/PDF，启动时清理严格超过 24 小时的崩溃残留；固定根设为 `0700`，全过程使用 no-follow、`dir_fd`、quarantine、inode + size，复制另核对 SHA-256 + size。功能见 `251d024`，安全加固见 `115bdf6`，源文件快照修复见 `3b31ad1`；独立阻断项窄复核 CLOSED，授权持久性、PowerPoint 真机和冻结 App 由用户验证。LibreOffice 流程不变。
+42. **音乐库与页面视频配乐**：音乐库固定在 App Data 的 `融景/music/`，视频导入仅保存首条音轨，所有导入按 SHA-256 去重。页面视频支持不配乐、固定和随机，默认音量 35%，从音频第 1 秒开始，短音频同曲循环并编码为 48 kHz 双声道 AAC；随机实际曲目写入完成回执。真实视频保持原声；翻页预览视频含 BGM，但弹窗当前不播放声音。M1/M2/M3 见 `7d3ebc2`、`00103fe`、`96ccba6`，独立审查 PASS WITH RISKS；AAC 尾垫与未持久 sidecar 为非阻断风险，真机听感、长音频和冻结 App 未验证。
 
 ---
 
