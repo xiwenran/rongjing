@@ -304,8 +304,8 @@ class MusicLibrary:
                 duration = float(track.get("duration", 0))
             except (TypeError, ValueError) as exc:
                 raise InvalidLibraryError(f"配乐时长无效：{track_id}") from exc
-            if duration <= 1.0:
-                raise MusicLibraryError(f"配乐可用时长不足 1 秒：{track.get('display_name') or track_id}")
+            if duration <= 0:
+                raise MusicLibraryError(f"配乐时长无效：{track.get('display_name') or track_id}")
             track["path"] = str(path)
             resolved.append(track)
         return resolved

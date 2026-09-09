@@ -13,8 +13,9 @@ from pathlib import Path
 from unittest import mock
 
 import av
-from PIL import Image, ImageChops, ImageDraw
-from PyQt6.QtWidgets import QApplication, QMessageBox
+import numpy as np
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
+from PyQt6.QtWidgets import QApplication, QLabel, QMessageBox
 
 from core.page_video_runner import (
     MAX_CURVE_FRAMES,
@@ -29,9 +30,10 @@ from core.page_video_runner import (
     transition_frame_indices,
     transition_progresses,
 )
+from core.batch_runner import scaled_size_for_width
 from core.core_image_page_curl import LEFT_TO_RIGHT, RIGHT_TO_LEFT, normalize_direction
 from core.page_preview_cache import allocate_preview_file, cleanup_expired_preview_cache
-from core.music_library import MusicLibrary
+from core.music_library import MusicLibrary, MusicLibraryError
 from models.template_model import Template
 
 
@@ -79,17 +81,16 @@ def run_runner(runner: ImageSequenceVideoRunner):
 
 
 def make_bgm_wav(path: Path, *, frequency: float) -> None:
-    """Write 1 s silence plus 0.25 s tone so a 2.4 s output must loop."""
+    """Write a short tone beginning at sample zero so a longer output must loop."""
     sample_rate = 48_000
+    duration = 0.18
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
         output.setframerate(sample_rate)
         samples = []
-        for index in range(round(sample_rate * 1.25)):
-            value = 0 if index < sample_rate else round(
-                18_000 * math.sin(2 * math.pi * frequency * (index - sample_rate) / sample_rate)
-            )
+        for index in range(round(sample_rate * duration)):
+            value = round(18_000 * math.sin(2 * math.pi * frequency * index / sample_rate))
             samples.append(struct.pack("<h", value))
         output.writeframes(b"".join(samples))
 
@@ -106,6 +107,20 @@ def test_bgm_m3_real_mux_random_none_and_invalid_id():
     make_bgm_wav(second_wav, frequency=880.0)
     first = library.import_audio(first_wav)["track"]
     second = library.import_audio(second_wav)["track"]
+    assert library.resolve_tracks([first["id"]])[0]["duration"] < 1.0
+
+    zero_library = MusicLibrary(ROOT / "zero-duration-library")
+    zero_track = zero_library.import_audio(first_wav)["track"]
+    zero_index = json.loads(zero_library.index_path.read_text(encoding="utf-8"))
+    zero_index["tracks"][0]["duration"] = 0
+    zero_library.index_path.write_text(
+        json.dumps(zero_index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    try:
+        zero_library.resolve_tracks([zero_track["id"]])
+        raise AssertionError("零时长配乐应失败")
+    except MusicLibraryError as exc:
+        assert "配乐时长无效" in str(exc)
 
     output = ROOT / "output"
     output.mkdir()
@@ -123,7 +138,7 @@ def test_bgm_m3_real_mux_random_none_and_invalid_id():
     )
     with (
         mock.patch.object(module, "availability", return_value=(False, "M3 CPU 小样")),
-        mock.patch.object(module, "select_encoder", return_value=("libx264", {"crf": "18", "preset": "veryfast"}, {})),
+        mock.patch.object(module, "select_encoder", return_value=("libx264", {"crf": "17", "preset": "veryfast"}, {})),
         mock.patch.object(runner._music_random, "choice", side_effect=lambda pool: pool[1]) as choice_mock,
     ):
         result = run_runner(runner)
@@ -150,10 +165,22 @@ def test_bgm_m3_real_mux_random_none_and_invalid_id():
     decoded_samples = sum(frame.samples for frame in audio_frames)
     target_samples = round(len(video_frames) * 48_000 / 10)
     assert abs(decoded_samples - target_samples) <= 1024, (decoded_samples, target_samples)
-    audio_peak = max(float(abs(frame.to_ndarray()).max()) for frame in audio_frames)
+    decoded = np.concatenate([frame.to_ndarray()[0] for frame in audio_frames]).astype(np.float32)
+    audio_peak = float(np.abs(decoded).max())
     assert audio_peak > 0.05, audio_peak
     assert audio_frames[0].pts is not None and audio_peak < 0.5
-    assert decoded_samples > round((second["duration"] - 1.0) * 48_000) * 2
+    early = decoded[: round(0.2 * 48_000)]
+    early_rms = float(np.sqrt(np.mean(early * early)))
+    assert early_rms > 0.02
+    reference = np.sin(2 * np.pi * 880.0 * np.arange(round(0.12 * 48_000)) / 48_000)
+    correlations = []
+    for lag in range(0, 2049, 64):
+        window = decoded[lag:lag + len(reference)]
+        if len(window) == len(reference) and np.linalg.norm(window) > 0:
+            correlations.append(abs(float(np.dot(window, reference) / (np.linalg.norm(window) * np.linalg.norm(reference)))))
+    start_correlation = max(correlations, default=0.0)
+    assert correlations and start_correlation > 0.7, start_correlation
+    assert decoded_samples > round(second["duration"] * 48_000) * 2
 
     no_output = ROOT / "no-output"
     no_output.mkdir()
@@ -164,7 +191,7 @@ def test_bgm_m3_real_mux_random_none_and_invalid_id():
     )
     with (
         mock.patch.object(module, "availability", return_value=(False, "M3 CPU 小样")),
-        mock.patch.object(module, "select_encoder", return_value=("libx264", {"crf": "18", "preset": "veryfast"}, {})),
+        mock.patch.object(module, "select_encoder", return_value=("libx264", {"crf": "17", "preset": "veryfast"}, {})),
     ):
         no_result = run_runner(no_runner)
     assert no_result["success"], no_result["message"]
@@ -193,9 +220,11 @@ def test_bgm_m3_real_mux_random_none_and_invalid_id():
         "audio_samples": decoded_samples,
         "target_samples": target_samples,
         "audio_peak": audio_peak,
+        "first_200ms_rms": early_rms,
+        "source_start_correlation": start_correlation,
         "selected_track": runner.actual_music[0],
         "checks": {
-            "start_at_one_second": "passed_non_silent_start_after_silent_first_second",
+            "start_at_zero": "passed_non_silent_correlated_start",
             "short_audio_loop": "passed",
             "random_record": "passed",
             "none_has_no_audio": "passed",
@@ -471,6 +500,85 @@ def test_real_encoding_and_pts():
     )
 
 
+def test_formal_resolution_and_static_clarity_short_sample():
+    import core.page_video_runner as module
+
+    folder = ROOT / "clarity-audio-v2"
+    pages = make_pages(folder / "pages", colors=((245, 245, 245), (225, 235, 250)), size=(1024, 768))
+    for index, path in enumerate(pages, 1):
+        with Image.open(path) as opened:
+            page = opened.convert("RGB")
+        draw = ImageDraw.Draw(page)
+        for y in range(80, 690, 36):
+            draw.line((90, y, 930, y), fill=(10, 10, 10), width=3)
+        draw.text((100, 30), f"CLARITY {index}", fill=(0, 0, 0))
+        page.save(path)
+    template = make_template(folder / "template", size=(1024, 768))
+
+    assert scaled_size_for_width((1024, 768), 2560) == (2560, 1920)
+    assert scaled_size_for_width((1024, 768), 3840) == (3840, 2880)
+    unchanged = Image.new("RGB", (32, 24), "white")
+    fitted = module.fit_page(unchanged, unchanged.size)
+    assert fitted.size == unchanged.size and fitted.tobytes() == unchanged.tobytes() and fitted is not unchanged
+
+    captured = {}
+    original_encode = module.ImageSequenceVideoRunner._encode_video_attempt
+
+    def capture_attempt(self, *, target_size, frames, **kwargs):
+        materialized = list(frames)
+        captured[target_size] = materialized[0].copy()
+        materialized[0].save(folder / f"pre-encode-{target_size[0]}x{target_size[1]}.png")
+        return original_encode(
+            self,
+            target_size=target_size,
+            frames=iter(materialized),
+            **kwargs,
+        )
+
+    decoded = {}
+    for output_width, expected_size in ((1920, (1920, 1440)), (0, (1024, 768))):
+        output = folder / f"output-{output_width}"
+        output.mkdir(parents=True)
+        runner = ImageSequenceVideoRunner(
+            [(f"两页-{output_width}", pages, [template])],
+            str(output),
+            hold_seconds=0.1,
+            turn_seconds=0.1,
+            fps=10,
+            realism_enabled=False,
+            output_width=output_width,
+        )
+        with (
+            mock.patch.object(module, "availability", return_value=(False, "V2 CPU 短样本")),
+            mock.patch.object(module, "select_encoder", return_value=("libx264", {"crf": "17", "preset": "veryfast"}, {})),
+            mock.patch.object(module.ImageSequenceVideoRunner, "_encode_video_attempt", new=capture_attempt),
+        ):
+            result = run_runner(runner)
+        assert result["success"], result["message"]
+        with av.open(runner.output_paths[0]) as container:
+            stream = container.streams.video[0]
+            assert (stream.width, stream.height) == expected_size
+            first_frame = next(container.decode(stream)).to_image().convert("RGB")
+        first_frame.save(folder / f"decoded-{expected_size[0]}x{expected_size[1]}.png")
+        decoded[expected_size] = first_frame
+
+    roi = (120, 100, 1800, 1340)
+    before = captured[(1920, 1440)].crop(roi).convert("L").filter(ImageFilter.FIND_EDGES)
+    after = decoded[(1920, 1440)].crop(roi).convert("L").filter(ImageFilter.FIND_EDGES)
+    before_energy = float(np.asarray(before, dtype=np.float32).mean())
+    after_energy = float(np.asarray(after, dtype=np.float32).mean())
+    assert before_energy > 0 and after_energy > 0
+    (folder / "clarity-report.json").write_text(
+        json.dumps({
+            "formal_size": [1920, 1440],
+            "original_size": [1024, 768],
+            "libx264": {"crf": 17, "preset": "veryfast"},
+            "edge_energy": {"pre_encode": before_energy, "decoded": after_energy},
+        }, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_static_cache_and_cpu_fallback_call_counts():
     import core.page_video_runner as module
 
@@ -483,7 +591,7 @@ def test_static_cache_and_cpu_fallback_call_counts():
     original_realism = module.apply_realism
     with (
         mock.patch.object(module, "availability", return_value=(False, "helper unavailable")),
-        mock.patch.object(module, "select_encoder", return_value=("libx264", {"crf": "18", "preset": "veryfast"}, {})),
+        mock.patch.object(module, "select_encoder", return_value=("libx264", {"crf": "17", "preset": "veryfast"}, {})),
         mock.patch.object(module, "embed_image_pil_fast", wraps=original_embed) as embed_mock,
         mock.patch.object(module, "apply_realism", wraps=original_realism) as realism_mock,
     ):
@@ -531,10 +639,13 @@ def test_core_image_one_batch_per_pair_and_encoder_selection():
     assert all(len(call.args[3]) == MAX_CURVE_FRAMES for call in render_mock.call_args_list)
     with mock.patch.object(module, "_probe_videotoolbox", return_value=True):
         codec, options, attrs = select_encoder(1920, 1080, 30)
-    assert codec == "h264_videotoolbox" and not options and attrs["bit_rate"] > 0
+    assert codec == "h264_videotoolbox" and not options and attrs["bit_rate"] == 8_000_000
+    with mock.patch.object(module, "_probe_videotoolbox", return_value=True):
+        _codec, _options, attrs = select_encoder(3840, 2160, 60)
+    assert attrs["bit_rate"] == 20_000_000
     with mock.patch.object(module, "_probe_videotoolbox", return_value=False):
         codec, options, attrs = select_encoder(1920, 1080, 30)
-    assert codec == "libx264" and options["crf"] == "18" and not attrs
+    assert codec == "libx264" and options["crf"] == "17" and not attrs
 
 
 def test_helper_timeout_falls_back_to_cpu():
@@ -698,6 +809,11 @@ def test_offscreen_ui_routing():
     window._populate_video_table(pages)
     assert window._video_input_kind == "image"
     assert not window._page_video_settings_widget.isHidden()
+    assert not window._format_row_widget.isHidden()
+    assert window.format_combo.isHidden()
+    assert not window.resolution_combo.isHidden()
+    labels = [label.text() for label in window._background_music_card.findChildren(QLabel)]
+    assert "合成时从音乐开头开始，自动匹配视频时长。" in labels
     assert window.video_table.rowCount() == 1
     assert window.video_table.item(0, 1).text() == "2 页"
 
@@ -707,6 +823,7 @@ def test_offscreen_ui_routing():
     window._background_music_card._mode = "random"
     window._background_music_card._selected_ids = ["track-a", "track-b"]
     window._background_music_card._volume = 42
+    window._set_batch_resolution_combo(1920)
     output = folder / "output"
     output.mkdir()
 
@@ -743,12 +860,14 @@ def test_offscreen_ui_routing():
     assert calls[-1][1]["music_mode"] == "random"
     assert calls[-1][1]["music_selected_ids"] == ["track-a", "track-b"]
     assert calls[-1][1]["music_volume"] == 42
+    assert calls[-1][1]["output_width"] == 1920
 
     video = folder / "dummy.mp4"
     video.write_bytes(b"placeholder")
     window._populate_video_table([str(video)])
     assert window._video_input_kind == "video"
     assert window._page_video_settings_widget.isHidden()
+    assert window._format_row_widget.isHidden()
     window._video_row_selections = {0: [template_key]}
     original_video_runner = batch_runner_module.VideoRunner
     batch_runner_module.VideoRunner = FakeRunner
@@ -760,6 +879,7 @@ def test_offscreen_ui_routing():
     assert "turn_seconds" not in calls[-1][1]
     assert "fps" not in calls[-1][1]
     assert "music_mode" not in calls[-1][1]
+    assert "output_width" not in calls[-1][1]
 
     warnings = []
     original_warning = QMessageBox.warning
@@ -871,7 +991,7 @@ def test_offscreen_preview_ui_contract():
         assert kwargs["hold_seconds"] == 0.5
         assert kwargs["turn_seconds"] == 0.7
         assert kwargs["fps"] == 15
-        assert kwargs["max_output_width"] == 960
+        assert kwargs["output_width"] == 960
         assert kwargs["realism_enabled"] is True
         assert kwargs["realism_strength"] == 63
         assert kwargs["direction"] == RIGHT_TO_LEFT
@@ -916,6 +1036,7 @@ def run_tests():
     test_offscreen_preview_dialog_contract()
     test_even_size_cancel_bad_image_and_non_overwrite()
     test_real_encoding_and_pts()
+    test_formal_resolution_and_static_clarity_short_sample()
     test_static_cache_and_cpu_fallback_call_counts()
     test_core_image_one_batch_per_pair_and_encoder_selection()
     test_helper_timeout_falls_back_to_cpu()

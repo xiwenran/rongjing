@@ -26,6 +26,7 @@ from core.core_image_page_curl import (
     render_batch,
 )
 from core.image_processor import embed_image_pil, embed_image_pil_fast, precompute_template_cache
+from core.batch_runner import scaled_size_for_width, scale_points_for_size
 from core.music_library import MusicLibrary, MusicLibraryError
 from core.output_paths import (
     allocate_unique_directory,
@@ -39,7 +40,6 @@ from core.realism_filter import apply_realism, precompute_realism
 MAX_CURVE_FRAMES = 8
 PROGRESS_INTERVAL_SECONDS = 0.15
 AUDIO_SAMPLE_RATE = 48_000
-AUDIO_START_SECONDS = 1.0
 
 
 def classify_media_paths(paths: Sequence[str]) -> str:
@@ -89,12 +89,16 @@ def even_size(size: tuple[int, int]) -> tuple[int, int]:
 def fit_page(image: Image.Image, size: tuple[int, int]) -> Image.Image:
     """Contain a page on a black-free white canvas while preserving its aspect ratio."""
     image = image.convert("RGB")
+    if image.size == size:
+        return image.copy()
     target_w, target_h = size
     scale = min(target_w / image.width, target_h / image.height)
     resized = image.resize(
         (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
-        Image.Resampling.BILINEAR,
+        Image.Resampling.LANCZOS,
     )
+    if resized.size == size:
+        return resized
     canvas = Image.new("RGB", size, "white")
     canvas.paste(resized, ((target_w - resized.width) // 2, (target_h - resized.height) // 2))
     return canvas
@@ -187,9 +191,9 @@ def _probe_videotoolbox(width: int, height: int) -> bool:
 def select_encoder(width: int, height: int, fps: int) -> tuple[str, dict, dict]:
     """Use VideoToolbox when it really opens, otherwise explicitly select libx264."""
     if _probe_videotoolbox(width, height):
-        bit_rate = min(int(width * height * fps * 0.07), 20_000_000)
+        bit_rate = min(max(int(width * height * fps * 0.07), 8_000_000), 20_000_000)
         return "h264_videotoolbox", {}, {"bit_rate": bit_rate}
-    return "libx264", {"crf": "18", "preset": "veryfast"}, {}
+    return "libx264", {"crf": "17", "preset": "veryfast"}, {}
 
 
 def allocate_page_curl_work_dir(root: str | os.PathLike[str] | None = None) -> Path:
@@ -242,7 +246,7 @@ class ImageSequenceVideoRunner(QThread):
         realism_enabled: bool = True,
         realism_strength: int = 70,
         output_path: str | None = None,
-        max_output_width: int | None = None,
+        output_width: int = 0,
         direction: str = RIGHT_TO_LEFT,
         page_curl_work_root: str | os.PathLike[str] | None = None,
         music_library: MusicLibrary | None = None,
@@ -260,7 +264,7 @@ class ImageSequenceVideoRunner(QThread):
         ]
         self.output_dir = output_dir
         self.output_path = output_path
-        self.max_output_width = int(max_output_width) if max_output_width else None
+        self.output_width = int(output_width)
         self.direction = normalize_direction(direction)
         self.page_curl_work_root = page_curl_work_root
         self.music_library = music_library
@@ -420,16 +424,16 @@ class ImageSequenceVideoRunner(QThread):
         with Image.open(template.background_path) as opened_bg:
             opened_bg.load()
             source_size = opened_bg.size
-            if self.max_output_width and source_size[0] > self.max_output_width:
-                scale = self.max_output_width / source_size[0]
-                scaled_size = (self.max_output_width, max(2, round(source_size[1] * scale)))
-            else:
-                scaled_size = source_size
+            base_size = (
+                (template.output_width, template.output_height)
+                if template.output_width > 0 else source_size
+            )
+            scaled_size = scaled_size_for_width(base_size, self.output_width) or base_size
             target_size = even_size(scaled_size)
-            bg_img = opened_bg.convert("RGB").resize(target_size, Image.Resampling.BILINEAR)
-        scale_x = target_size[0] / source_size[0]
-        scale_y = target_size[1] / source_size[1]
-        points = [[x * scale_x, y * scale_y] for x, y in template.screen_points]
+            bg_img = opened_bg.convert("RGB")
+            if bg_img.size != target_size:
+                bg_img = bg_img.resize(target_size, Image.Resampling.LANCZOS)
+        points = scale_points_for_size(template.screen_points, source_size, target_size)
         cache = precompute_template_cache(bg_img, points, ppt_size=pages[0].size)
         realism_cache = precompute_realism(
             bg_img,
@@ -484,7 +488,7 @@ class ImageSequenceVideoRunner(QThread):
         selected = select_encoder(*target_size, self.fps)
         attempts = [selected]
         if selected[0] == "h264_videotoolbox":
-            attempts.append(("libx264", {"crf": "18", "preset": "veryfast"}, {}))
+            attempts.append(("libx264", {"crf": "17", "preset": "veryfast"}, {}))
 
         last_error = None
         for codec_name, codec_options, codec_attrs in attempts:
@@ -591,12 +595,11 @@ class ImageSequenceVideoRunner(QThread):
         return encoded_count
 
     def _iter_bgm_frames(self, track: dict, target_samples: int):
-        """Decode from 1.0 s and replay the same source until the exact sample target."""
+        """Decode from the source beginning and loop until the exact sample target."""
         import av
 
         remaining = int(target_samples)
         audio_pts = 0
-        skip_samples = round(AUDIO_START_SECONDS * AUDIO_SAMPLE_RATE)
         gain = self.music_volume / 100.0
         time_base = Fraction(1, AUDIO_SAMPLE_RATE)
         while remaining > 0:
@@ -608,15 +611,10 @@ class ImageSequenceVideoRunner(QThread):
                 resampler = av.AudioResampler(
                     format="fltp", layout="stereo", rate=AUDIO_SAMPLE_RATE
                 )
-                skip = skip_samples
                 decoded_frames = source.decode(streams[0])
                 for decoded in decoded_frames:
                     for converted in _resampled_audio_frames(resampler.resample(decoded)):
                         samples = converted.to_ndarray()
-                        if skip:
-                            dropped = min(skip, samples.shape[1])
-                            samples = samples[:, dropped:]
-                            skip -= dropped
                         if not samples.shape[1]:
                             continue
                         take = min(remaining, samples.shape[1])
@@ -635,10 +633,6 @@ class ImageSequenceVideoRunner(QThread):
                             return
                 for converted in _resampled_audio_frames(resampler.resample(None)):
                     samples = converted.to_ndarray()
-                    if skip:
-                        dropped = min(skip, samples.shape[1])
-                        samples = samples[:, dropped:]
-                        skip -= dropped
                     if not samples.shape[1]:
                         continue
                     take = min(remaining, samples.shape[1])
@@ -657,7 +651,7 @@ class ImageSequenceVideoRunner(QThread):
                         return
             if produced_this_cycle == 0:
                 raise MusicLibraryError(
-                    f"配乐从第 1 秒开始后没有可用音频：{track.get('display_name') or track['id']}"
+                    f"配乐没有可用音频：{track.get('display_name') or track['id']}"
                 )
 
     def _encode_bgm(self, container, audio_stream, track: dict, *, target_samples: int) -> None:

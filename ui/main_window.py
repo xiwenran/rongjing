@@ -1124,9 +1124,11 @@ class MainWindow(QMainWindow):
         self._format_row_widget = QWidget(); self._fix_bg(self._format_row_widget, _SIDE)
         frw_layout = QHBoxLayout(self._format_row_widget)
         frw_layout.setContentsMargins(0, 0, 0, 0); frw_layout.setSpacing(8)
-        frw_layout.addWidget(_lbl("图片格式:", "hint"))
+        self._format_label = _lbl("图片格式:", "hint")
+        frw_layout.addWidget(self._format_label)
         frw_layout.addWidget(self.format_combo)
-        frw_layout.addWidget(_lbl("分辨率:", "hint"))
+        self._resolution_label = _lbl("分辨率:", "hint")
+        frw_layout.addWidget(self._resolution_label)
         frw_layout.addWidget(self.resolution_combo)
         frw_layout.addStretch()
         fv.addWidget(self._format_row_widget)
@@ -2081,7 +2083,7 @@ class MainWindow(QMainWindow):
         self._c1_video.setVisible(idx == 2)
         self._c2.setVisible(idx != 2)
         self._c_video_right.setVisible(idx == 2)
-        self._format_row_widget.setVisible(idx != 2)  # no format selector for video
+        self._sync_video_output_controls()
         self._batch_diversify.setVisible(idx != 2)
         self._sync_page_preview_state()
         self._sync_page_music_state()
@@ -2110,6 +2112,15 @@ class MainWindow(QMainWindow):
             1920,
         )
         self._settings.setValue("batch_output_width", self._batch_output_width)
+
+    def _sync_video_output_controls(self):
+        page_video = self._batch_mode == 2 and self._video_input_kind == "image"
+        image_export = self._batch_mode != 2
+        self._format_row_widget.setVisible(image_export or page_video)
+        self._format_label.setVisible(image_export)
+        self.format_combo.setVisible(image_export)
+        self._resolution_label.setVisible(image_export or page_video)
+        self.resolution_combo.setVisible(image_export or page_video)
 
     def _save_realism_enabled(self, checked: bool):
         self._realism_enabled = checked
@@ -2390,6 +2401,7 @@ class MainWindow(QMainWindow):
         self.video_table.setRowCount(0)
         self._video_input_kind = input_kind
         self._page_video_settings_widget.setVisible(input_kind == "image")
+        self._sync_video_output_controls()
         self._sync_page_preview_state()
         self._sync_page_music_state()
         if input_kind == "image":
@@ -2398,6 +2410,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "输入不支持", "过滤后没有有效页面图片")
                 self._video_input_kind = None
                 self._page_video_settings_widget.hide()
+                self._sync_video_output_controls()
                 self._sync_page_preview_state()
                 self._sync_page_music_state()
                 return
@@ -2520,7 +2533,7 @@ class MainWindow(QMainWindow):
             realism_enabled=self.realism_check.isChecked(),
             realism_strength=self.realism_strength_spin.value(),
             output_path=self._preview_output_path,
-            max_output_width=960,
+            output_width=960,
             direction=self.page_direction_combo.currentData() or RIGHT_TO_LEFT,
             music_library=self._music_library,
             music_mode=self._background_music_card.mode,
@@ -2628,6 +2641,7 @@ class MainWindow(QMainWindow):
                 fps=self.page_fps_spin.value(),
                 realism_enabled=self._realism_enabled,
                 realism_strength=self._realism_strength,
+                output_width=self._batch_output_width,
                 direction=self.page_direction_combo.currentData() or RIGHT_TO_LEFT,
                 music_library=self._music_library,
                 music_mode=self._background_music_card.mode,

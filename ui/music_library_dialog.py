@@ -371,7 +371,7 @@ class BackgroundMusicCard(QWidget):
         select_row.addWidget(self.selection_label, 1)
         layout.addLayout(select_row)
 
-        explanation = QLabel("合成时从音乐第 1 秒开始，自动匹配视频时长。")
+        explanation = QLabel("合成时从音乐开头开始，自动匹配视频时长。")
         explanation.setWordWrap(True)
         explanation.setStyleSheet(f"color:{_TEXT2}; font-size:11px; background:transparent;")
         layout.addWidget(explanation)

@@ -129,8 +129,8 @@ class Template:
   - **编码线程**：消费 `audio_q` + `encode_q`，做 `encode` + `mux`。**所有 `outp.mux` 只在这一个线程发生**（PyAV container 非线程安全）
   - 收益：解码（PyAV）和编码（libx264/VideoToolbox）不再被关在同一线程轮流跑，可与嵌入真正重叠
 - **Mac 硬件编码（VideoToolbox）**：`_detect_encoder()` 探测 `h264_videotoolbox` 可用性
-  - 可用（Mac）→ 用 VideoToolbox，码率用 `bit_rate`（不支持 crf），按背景分辨率估算 `bg_w*bg_h*fps*0.07`，上限 20Mbps
-  - 不可用（Windows/Linux）→ 降级回 `libx264 + {crf:18, preset:veryfast}`
+  - 可用（Mac）→ 用 VideoToolbox，码率用 `bit_rate`（不支持 crf），按背景分辨率估算 `bg_w*bg_h*fps*0.07`，限制在 8–20 Mbps
+  - 不可用（Windows/Linux）→ 降级回 `libx264 + {crf:17, preset:veryfast}`
 - **帧顺序保证**：嵌入并行（乱序完成），但 `_drain` 永远 `popleft` 取最小 `frame_i` 且 `fut.result()` 阻塞等待，`encode_q` FIFO，输出严格有序
 - **底层优化**：`precompute_template_cache(..., ppt_size=(w,h))` 预计算透视系数使 cache 只读；`embed_image_pil_fast` 用 RGB 3通道 + BILINEAR 插值
 - **PTS 修复**：视频用帧计数器 `out_frame.pts = frame_i`；音频用样本计数器 `resampled.pts = audio_pts; audio_pts += resampled.samples`
@@ -202,7 +202,8 @@ _RED   = "#FA5151"   # 危险色
 - 翻页方向默认为从右向左，可选从左向右；正式导出与预览、CPU 与 Core Image 共用同一方向
 - 页面图片模式提供「预览翻页」按钮，使用前两张有效页面和首个屏幕模板，在 900×560 应用内弹窗循环播放；支持播放、暂停、重新播放和关闭
 - 预览缓存使用专用 `page_preview_cache` 平铺唯一 MP4；启动时通过 no-follow `dir_fd` 只清理直属层超过 24 小时的普通 MP4，不处理目录、符号链接或其他文件
-- 音乐库固定存放于 App Data 的 `融景/music/`，支持音频、文件夹、视频导入；视频仅提取首音轨不保存画面，SHA-256 去重。页面视频支持不配乐/固定/随机，默认音量 35%，从第 1 秒起、短音频同曲循环、48 kHz 双声道 AAC；随机实际曲目进入完成回执，真实视频原声不变，预览视频含 BGM 但弹窗当前只看画面
+- 正式页面视频复用批量图片分辨率规则：`0` 为原始/模板尺寸，默认宽度 1920，可选 2560/3840；预览固定宽度 960，真实视频不套用。背景缩放使用 LANCZOS，同尺寸不重复 resize；VideoToolbox 为 8–20 Mbps，libx264 为 CRF 17
+- 音乐库固定存放于 App Data 的 `融景/music/`，支持音频、文件夹、视频导入；视频仅提取首音轨不保存画面，SHA-256 去重。页面视频支持不配乐/固定/随机，默认音量 35%，从第 0 秒起、短音频每轮同曲从第 0 秒循环、48 kHz 双声道 AAC；随机实际曲目进入完成回执，真实视频原声不变，预览视频含 BGM 但弹窗当前只看画面
 - 所有扫描入口先过滤隐藏文件、AppleDouble `._*`、Office 临时文件 `~$*` 和非文件项，再执行排序、计数、封面选择、manifest 生成和任务清单组装
 - 拼图、图片合成、真实视频和资料导出每次分配新来源目录；重名时追加 `_2`、`_3`，旧产物不覆盖、不清理
 
@@ -267,7 +268,8 @@ _RED   = "#FA5151"   # 危险色
 - [x] Mac 页面序列使用系统 `CIPageCurlWithShadowTransition` 生成真实曲面卷页；静态页按模板缓存，每组相邻页最多 8 张独立曲面帧；非 Mac 或助手不可用时回退 CPU 平面翻页
 - [x] 页面图片模式新增「预览翻页」按钮与 900×560 应用内循环播放器，支持播放、暂停、重新播放和关闭；翻页默认从右向左、可选从左向右，正式/预览与 CPU/Core Image 方向一致
 - [x] 预览缓存独立使用 `page_preview_cache` 平铺唯一 MP4，启动时只安全清理直属层超过 24 小时的普通 MP4；Mac 打包脚本先编译 Swift 助手并通过 PyInstaller 固定打入 `helpers/page_curl/`，编译失败停止打包
-- [x] 音乐库与页面视频配乐：App Data 固定音乐库、音频/文件夹/视频首音轨导入、SHA-256 去重；页面视频不配乐/固定/随机、35% 默认音量、1 秒起点、同曲循环与 48 kHz 双声道 AAC，完成回执记录随机实际曲目
+- [x] 音乐库与页面视频配乐：App Data 固定音乐库、音频/文件夹/视频首音轨导入、SHA-256 去重；页面视频不配乐/固定/随机、35% 默认音量、零秒起播、同曲从零秒循环与 48 kHz 双声道 AAC，完成回执记录随机实际曲目
+- [x] 页面视频清晰度：正式导出复用 `0`/1920/2560/3840 分辨率规则，预览固定 960，真实视频不套用；LANCZOS 缩放且同尺寸不 resize，VideoToolbox 8–20 Mbps，libx264 CRF 17
 - [x] `material-exporter` 与 `ppt-notes-pipeline` 现役 Skill 归融景维护，旧 `ppt-batch-tool` 项目暂停维护
 
 ---
@@ -316,7 +318,8 @@ _RED   = "#FA5151"   # 危险色
 39. **Core Image 助手的源码与冻结路径**：源码运行从 `build/page_curl/PageCurlRenderer` 加载；PyInstaller 冻结环境从 `sys._MEIPASS/helpers/page_curl/PageCurlRenderer` 加载。Mac 打包必须先执行 `scripts/build_page_curl_helper.sh` 并以 `--add-binary` 打入固定相对目录，编译失败直接停止；Windows 不打包该助手，继续使用 CPU 回退。P1/P2 已验证源码路径的 Core Image 曲面帧、静态缓存、每组相邻页最多 8 帧与 VideoToolbox，冻结 App 和 GUI 真机交互仍待验证。
 40. **翻页预览与缓存边界**：预览在固定 900×560 应用内弹窗循环播放，支持播放、暂停、重新播放和关闭。翻页默认从右向左、可选从左向右，正式导出与预览、CPU 与 Core Image 共用同一方向。预览只在专用 `page_preview_cache` 直属层平铺唯一 MP4；启动清理通过 no-follow `dir_fd` 只移除超过 24 小时的普通 MP4，目录、符号链接和其他文件保持不变。功能见 `fefe3d3`，清理边界窄复核见 `db45103`；真机播放和冻结 App 由用户验证。
 41. **PowerPoint 固定授权中转**：macOS PowerPoint 只在 `~/Documents/融景Office中转/` 复制副本、打开文件并接收 PDF，不移动原件。正常结束按 manifest 精确清理本批副本/PDF，启动时清理严格超过 24 小时的崩溃残留；固定根设为 `0700`，全过程使用 no-follow、`dir_fd`、quarantine、inode + size，复制另核对 SHA-256 + size。功能见 `251d024`，安全加固见 `115bdf6`，源文件快照修复见 `3b31ad1`；独立阻断项窄复核 CLOSED，授权持久性、PowerPoint 真机和冻结 App 由用户验证。LibreOffice 流程不变。
-42. **音乐库与页面视频配乐**：音乐库固定在 App Data 的 `融景/music/`，视频导入仅保存首条音轨，所有导入按 SHA-256 去重。页面视频支持不配乐、固定和随机，默认音量 35%，从音频第 1 秒开始，短音频同曲循环并编码为 48 kHz 双声道 AAC；随机实际曲目写入完成回执。真实视频保持原声；翻页预览视频含 BGM，但弹窗当前不播放声音。M1/M2/M3 见 `7d3ebc2`、`00103fe`、`96ccba6`，独立审查 PASS WITH RISKS；AAC 尾垫与未持久 sidecar 为非阻断风险，真机听感、长音频和冻结 App 未验证。
+42. **音乐库与页面视频配乐**：音乐库固定在 App Data 的 `融景/music/`，视频导入仅保存首条音轨，所有导入按 SHA-256 去重。页面视频支持不配乐、固定和随机，默认音量 35%，从音频第 0 秒开始，短音频每轮同曲从第 0 秒循环并编码为 48 kHz 双声道 AAC；随机实际曲目写入完成回执。真实视频保持原声；翻页预览视频含 BGM，但弹窗当前不播放声音。M1/M2/M3 见 `7d3ebc2`、`00103fe`、`96ccba6`，独立审查 PASS WITH RISKS；AAC 尾垫与未持久 sidecar 为非阻断风险，真机听感、长音频和冻结 App 未验证。
+43. **页面视频清晰度与零秒配乐**：正式页面视频复用批量图片的 `0`/1920/2560/3840 分辨率规则，预览固定 960，真实视频不套用；背景只在尺寸变化时用 LANCZOS 缩放。VideoToolbox 码率限制为 8–20 Mbps，libx264 使用 CRF 17。BGM 从源音频第 0 秒开始，每轮循环也回到第 0 秒。修复见 `9a6889d`；短样本 1920×1440 / 1024×768，编码前后 ROI 边缘能量 9.710 / 9.887，前 200 ms RMS 0.0963、源相关 0.9998；真机文字观感和冻结 App 未验证。
 
 ---
 
