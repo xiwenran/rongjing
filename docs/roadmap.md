@@ -8,18 +8,7 @@
 
 ## 当前主线状态
 
-### 🚧 Mac Core Image 曲面翻页与页面视频加速
-
-- 当前阶段：P4 Mac 打包接线与文档已完成，待独立审查和冻结包验证
-- 一句话现状：Mac 打包现会先编译并内置 Core Image 助手，源码与冻结路径已分流；说明已统一，P4 尚未关闭。
-- 阻塞：独立审查与实际冻结 App、GUI 真机验证未执行
-- 最近验证：`build_page_curl_helper.sh` 单次编译成功且 binary 可执行；`bash -n`、wrapper `py_compile` 和冻结路径探针通过；未运行实际打包或 Core Image 视频。
-- commit hash：`4b291dd8ff4d55c83084f65f6a55b13323960f62`
-- 阶段清单：
-  - ✅ P1：本机 Core Image 可用性 / 离屏渲染探针 `11b310dcc0cca85ed00f91b0f58c177335850533` — 验证: Swift helper 单进程读取同一 manifest，系统 `CIPageCurlWithShadowTransition` 离屏输出 progress 0/0.5/1 三帧；首尾像素差 0，中间帧相对两端平均差 21.43/18.68，目检确认曲面卷边、纸张背面、折痕与阴影
-  - ✅ P2：接入页面视频、静态帧缓存、VideoToolbox 与 CPU 回退 `2a9272bdab79973b2d485dc979a6059251822225` — 验证: 正式 runner 实际 backend 为 `Core Image（CIPageCurlWithShadowTransition）`、encoder 为 `h264_videotoolbox`，H.264 10 FPS、640×360、10 帧且 PTS 递增；静态页 embed/realism 每模板每页仅调用一次，每 pair 单次批量调用，独立曲面帧上限 8 帧
-  - ✅ P3：前两页预览 UI `4b291dd8ff4d55c83084f65f6a55b13323960f62` — 验证: offscreen 确认仅页面输入显示「预览翻页」，严格取前两张有效页与首个屏幕模板，固定 15 FPS / 停留 0.5 秒 / 翻页 0.7 秒 / 最大 960 宽，运行互斥、成功打开与失败恢复均通过；`py_compile` 与 `git diff --check` 通过
-  - 🚧 P4：Mac 打包接线与文档已完成；Swift 助手编译失败会阻断打包，PyInstaller 固定收入 `helpers/page_curl/`，源码/冻结路径分流已验证；待独立审查、实际冻结 App 与 GUI 真机验证后收口
+（当前没有施工中的主线专项。）
 
 ## 待确认区（等用户裁决：还在做 / 已关闭 / 废弃归档）
 
@@ -35,6 +24,7 @@
 
 ## 已关闭
 
+- Mac Core Image 曲面翻页与页面视频加速 ✅ `8fe722302841783c0a81213c1b3faa6b4ed41550` — 验证: 系统 `CIPageCurlWithShadowTransition` 真实输出卷边、背面与阴影三帧；正式 runner 回读 Core Image + `h264_videotoolbox`、10 帧 PTS 递增，静态页每模板每页只合成一次，前两页预览已接入；独立审查两项阻断窄复核 CLOSED。实际冻结 App 与 GUI 真机操作由用户自行验证
 - 笔记本室内暗调倾斜模板补充 ✅ `753c5658501a4a28d92a0b3cdb46ca714ff3457f`、AI 背景覆盖 `5b5be697c2afd89d147d1c8f1cd4d6e7cc4b7ca6` — 验证: `python3 cli.py list-templates` 确认 6 个 `20260909-laptop-indoor-dark-*` 模板均可加载且背景存在；`python3 cli.py process` 用测试页套 6 个 AI 背景模板成功输出 6 张 JPEG；联系图目测通过；本轮按用户要求未做重打包/全量测试
 - 资料导出统一底座、全链 AppleDouble 过滤、永不覆盖、页面翻页视频与 Skills 迁移 ✅ `0611e5d22b2ad882ad3912f4abc7793e3c590cb4` — 验证: PPT/Word 经 LibreOffice 真实导出 1 页 PNG，翻页视频 H.264 样本的 10 FPS、10 帧与单调 PTS 回读通过；CLI 过滤阻断经独立窄复核 CLOSED，两个 Skill 四端链接对账 41 项通过。PowerPoint 原生后端、Windows COM、冻结包与真机交互未验证
 - 拼图缩略图拖动排序 ✅ `3ccabb7a1ceaf2d8714a1d03391a95bf9dab307f` — 验证: `python3 -m py_compile ui/collage_tab.py`、`git diff --check`、`QT_QPA_PLATFORM=offscreen` 冒烟确认拖动重排后文件顺序、排除状态和多来源当前项同步正确；本轮按用户要求未做重打包/全量测试
