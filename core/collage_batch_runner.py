@@ -52,8 +52,8 @@ class CollageBatchRunner(QThread):
             ]
 
             if not filtered_files:
-                self._remove_stale_outputs(set())
-                self.finished.emit(True, "完成！没有可处理的图片")
+                self._save_output_manifest(set())
+                self.finished.emit(True, f"完成！没有可处理的图片\n输出目录：{self.output_dir}")
                 return
 
             output_count = self.total_output_images
@@ -117,35 +117,15 @@ class CollageBatchRunner(QThread):
                 done += 1
                 self.progress.emit(done, total, f"拼图_{collage_idx}{ext}")
 
-            self._remove_stale_outputs(written_files)
-            self.finished.emit(True, f"完成！共生成 {done} 张拼图")
+            self._save_output_manifest(written_files)
+            self.finished.emit(True, f"完成！共生成 {done} 张拼图\n输出目录：{self.output_dir}")
 
         except Exception as e:
             import traceback
             self.finished.emit(False, f"错误: {str(e)}\n{traceback.format_exc()}")
 
-    def _remove_stale_outputs(self, written_files: Set[str]):
-        previous_files = self._load_output_manifest()
-        for name in previous_files - written_files:
-            path = os.path.join(self.output_dir, name)
-            if os.path.isfile(path):
-                os.remove(path)
-        self._save_output_manifest(written_files)
-
     def _manifest_path(self) -> str:
         return os.path.join(self.output_dir, ".rongjing_collage_manifest.json")
-
-    def _load_output_manifest(self) -> Set[str]:
-        path = self._manifest_path()
-        if not os.path.isfile(path):
-            return set()
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            return set()
-        files = data.get("files", []) if isinstance(data, dict) else []
-        return {name for name in files if self._is_safe_output_name(name)}
 
     def _save_output_manifest(self, files: Set[str]):
         data = {
@@ -155,14 +135,3 @@ class CollageBatchRunner(QThread):
         }
         with open(self._manifest_path(), "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-
-    @staticmethod
-    def _is_safe_output_name(name: str) -> bool:
-        if not isinstance(name, str) or os.path.basename(name) != name:
-            return False
-        stem, ext = os.path.splitext(name)
-        return (
-            ext.lower() in {".jpg", ".png"}
-            and stem.startswith("拼图_")
-            and stem[3:].isdigit()
-        )

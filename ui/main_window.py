@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
     QPushButton, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QFileDialog, QMessageBox, QComboBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QProgressBar, QFormLayout, QSpinBox,
+    QHeaderView, QProgressBar, QFormLayout, QSpinBox, QDoubleSpinBox,
     QAbstractItemView, QFrame, QScrollArea, QDialog, QCheckBox, QDialogButtonBox,
     QSizePolicy, QMenu, QWidgetAction,
 )
@@ -26,6 +26,8 @@ from models.template_model import (
     normalize_template_category,
 )
 from core.batch_runner import BatchRunner, VideoRunner, get_image_files, natural_sort_key
+from core.file_policy import is_valid_input_file
+from core.page_video_runner import classify_media_paths, normalize_page_paths
 from core.ai_background import normalize_base_url
 from core.screen_detector import detect_screen_points, detect_green_screen_points
 from ui.canvas_widget import CanvasWidget
@@ -606,6 +608,10 @@ class MainWindow(QMainWindow):
         self._last_dir_output  = self._settings.value("last_dir_output",   _home)
         self._last_dir_images  = self._settings.value("last_dir_images",   _home)
         self._last_dir_videos  = self._settings.value("last_dir_videos",   _home)
+        self._page_hold_seconds = float(self._settings.value("page_video/hold_seconds", 2.0))
+        self._page_turn_seconds = float(self._settings.value("page_video/turn_seconds", 0.7))
+        self._page_video_fps = int(self._settings.value("page_video/fps", 25))
+        self._video_input_kind = None
         self._last_preview_image = self._settings.value("last_preview_image", "")
         self._batch_output_width = int(self._settings.value("batch_output_width", 1920))
         self._realism_enabled = bool(self._settings.value("realism_enabled", True, type=bool))
@@ -674,6 +680,9 @@ class MainWindow(QMainWindow):
         nav_items.append(("  📦  批量导出", next_idx))
         self._page_indices["batch"] = next_idx
         next_idx += 1
+        nav_items.append(("  📄  资料导出", next_idx))
+        self._page_indices["document_export"] = next_idx
+        next_idx += 1
         if self._collages_dir is not None:
             nav_items.append(("  🧩  拼图", next_idx))
             self._page_indices["collage"] = next_idx
@@ -717,6 +726,9 @@ class MainWindow(QMainWindow):
         self._mark_styled_bg(self.stack, "pageStack")
         self.stack.addWidget(self._build_editor_tab())
         self.stack.addWidget(self._build_batch_tab())
+        from ui.document_export_tab import DocumentExportTab
+        self._document_export_tab = DocumentExportTab()
+        self.stack.addWidget(self._document_export_tab)
         if self._collages_dir is not None:
             from ui.collage_tab import CollageTab
             self._collage_tab = CollageTab(collages_dir=self._collages_dir)
@@ -1021,8 +1033,29 @@ class MainWindow(QMainWindow):
         # Video mode (hidden by default) — pick button only; table goes to right panel
         c1_video = QWidget(); self._fix_bg(c1_video, _SIDE)
         fvi = QVBoxLayout(c1_video); fvi.setContentsMargins(0, 0, 0, 0); fvi.setSpacing(8)
-        _hv = _lbl("选择视频录制文件（如 PPT 录屏），视频每帧将被嵌入场景模板的背景图中，输出合成视频", "hint"); _hv.setWordWrap(True); fvi.addWidget(_hv)
-        fvi.addWidget(_btn("选择视频文件…", self._pick_video_files, "scan"))
+        _hv = _lbl("选择真实视频，或一组页面图片生成自动翻页视频；两类输入不能混合。", "hint"); _hv.setWordWrap(True); fvi.addWidget(_hv)
+        fvi.addWidget(_btn("选择视频或页面图片…", self._pick_video_files, "scan"))
+        fvi.addWidget(_btn("选择页面图片文件夹…", self._pick_page_image_folder, "scan"))
+
+        self._page_video_settings_widget = QWidget(); self._fix_bg(self._page_video_settings_widget, _SIDE)
+        page_settings = QFormLayout(self._page_video_settings_widget)
+        page_settings.setContentsMargins(0, 4, 0, 0); page_settings.setSpacing(7)
+        self.page_hold_spin = QDoubleSpinBox()
+        self.page_hold_spin.setRange(0.2, 30.0); self.page_hold_spin.setSingleStep(0.1)
+        self.page_hold_spin.setSuffix(" 秒"); self.page_hold_spin.setValue(self._page_hold_seconds)
+        self.page_turn_spin = QDoubleSpinBox()
+        self.page_turn_spin.setRange(0.2, 5.0); self.page_turn_spin.setSingleStep(0.1)
+        self.page_turn_spin.setSuffix(" 秒"); self.page_turn_spin.setValue(self._page_turn_seconds)
+        self.page_fps_spin = QSpinBox()
+        self.page_fps_spin.setRange(12, 60); self.page_fps_spin.setValue(self._page_video_fps)
+        page_settings.addRow("每页停留", self.page_hold_spin)
+        page_settings.addRow("翻页时长", self.page_turn_spin)
+        page_settings.addRow("帧率", self.page_fps_spin)
+        self.page_hold_spin.valueChanged.connect(self._save_page_video_settings)
+        self.page_turn_spin.valueChanged.connect(self._save_page_video_settings)
+        self.page_fps_spin.valueChanged.connect(self._save_page_video_settings)
+        self._page_video_settings_widget.hide()
+        fvi.addWidget(self._page_video_settings_widget)
         c1_video.hide(); fv.addWidget(c1_video)
 
         self._c1_folder = c1_folder
@@ -1145,10 +1178,10 @@ class MainWindow(QMainWindow):
         self._c2 = c2
 
         # Video table card (video mode, right panel)
-        c_video_right = _card(_lbl("视频与模板", "h2"))
+        c_video_right = _card(_lbl("视频 / 页面序列与模板", "h2"))
         c_video_right.layout().addWidget(_lbl("每行选择要嵌入的场景模板", "hint"))
         self.video_table = QTableWidget(0, 3)
-        self.video_table.setHorizontalHeaderLabels(["视频文件（每帧作为 PPT 内容嵌入场景）", "时长/帧数", "场景模板"])
+        self.video_table.setHorizontalHeaderLabels(["输入（视频或页面序列）", "时长 / 页面数", "场景模板"])
         vh = self.video_table.horizontalHeader()
         vh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         vh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -2042,6 +2075,14 @@ class MainWindow(QMainWindow):
         self._realism_strength = value
         self._settings.setValue("realism_strength", value)
 
+    def _save_page_video_settings(self, _value=None):
+        self._page_hold_seconds = self.page_hold_spin.value()
+        self._page_turn_seconds = self.page_turn_spin.value()
+        self._page_video_fps = self.page_fps_spin.value()
+        self._settings.setValue("page_video/hold_seconds", self._page_hold_seconds)
+        self._settings.setValue("page_video/turn_seconds", self._page_turn_seconds)
+        self._settings.setValue("page_video/fps", self._page_video_fps)
+
     # ── Batch actions ─────────────────────────────────────────────────────────
 
     def _browse_input(self):
@@ -2156,14 +2197,17 @@ class MainWindow(QMainWindow):
         if not templates:
             QMessageBox.warning(self, "提示", "请先在「模板配置」中创建并保存场景模板"); return
         subfolders = sorted((d for d in os.listdir(input_dir)
-                             if os.path.isdir(os.path.join(input_dir, d))),
+                             if not d.startswith(".")
+                             and os.path.isdir(os.path.join(input_dir, d))),
                             key=natural_sort_key)
         self._row_selections = {}
         self.subfolder_table.setRowCount(0)
         for sf in subfolders:
             row = self.subfolder_table.rowCount()
             self.subfolder_table.insertRow(row)
-            self.subfolder_table.setItem(row, 0, QTableWidgetItem(sf))
+            source_item = QTableWidgetItem(sf)
+            source_item.setData(Qt.ItemDataRole.UserRole, sf)
+            self.subfolder_table.setItem(row, 0, source_item)
             n = len(get_image_files(os.path.join(input_dir, sf)))
             ni = QTableWidgetItem(str(n))
             ni.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2177,7 +2221,9 @@ class MainWindow(QMainWindow):
             if imgs:
                 row = self.subfolder_table.rowCount()
                 self.subfolder_table.insertRow(row)
-                self.subfolder_table.setItem(row, 0, QTableWidgetItem("(根目录)"))
+                source_item = QTableWidgetItem(os.path.basename(os.path.normpath(input_dir)))
+                source_item.setData(Qt.ItemDataRole.UserRole, "(根目录)")
+                self.subfolder_table.setItem(row, 0, source_item)
                 ni = QTableWidgetItem(str(len(imgs)))
                 ni.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.subfolder_table.setItem(row, 1, ni)
@@ -2212,7 +2258,10 @@ class MainWindow(QMainWindow):
             script = f'set f to (choose file with prompt "选择图片文件" of type {{"public.image"}}{loc} with multiple selections allowed)\nset out to ""\nrepeat with p in f\n    set out to out & POSIX path of p & "\\n"\nend repeat\nout'
             result, ran = _run_osascript(script)
             if ran:
-                paths = [p for p in result.strip().split("\n") if p]
+                paths = [
+                    p for p in result.strip().split("\n")
+                    if p and is_valid_input_file(p, "image")
+                ]
                 paths.sort(key=lambda p: natural_sort_key(os.path.basename(p)))
                 if paths:
                     self._save_dir("images", os.path.dirname(paths[0]))
@@ -2229,6 +2278,8 @@ class MainWindow(QMainWindow):
             options=opts,
         )
         if paths:
+            paths = [p for p in paths if is_valid_input_file(p, "image")]
+        if paths:
             paths.sort(key=lambda p: natural_sort_key(os.path.basename(p)))
             self._save_dir("images", os.path.dirname(paths[0]))
             self._picked_image_files = paths
@@ -2240,7 +2291,14 @@ class MainWindow(QMainWindow):
         self.subfolder_table.setRowCount(0)
         row = 0
         self.subfolder_table.insertRow(row)
-        self.subfolder_table.setItem(row, 0, QTableWidgetItem("图片批量"))
+        parent_name = "图片批量"
+        if self._picked_image_files:
+            parent_name = os.path.basename(
+                os.path.normpath(os.path.dirname(self._picked_image_files[0]))
+            ) or parent_name
+        source_item = QTableWidgetItem(parent_name)
+        source_item.setData(Qt.ItemDataRole.UserRole, "图片批量")
+        self.subfolder_table.setItem(row, 0, source_item)
         ni = QTableWidgetItem(str(len(self._picked_image_files)))
         ni.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self.subfolder_table.setItem(row, 1, ni)
@@ -2251,7 +2309,7 @@ class MainWindow(QMainWindow):
     def _pick_video_files(self):
         if sys.platform == "darwin":
             loc = f' default location (POSIX file "{self._last_dir_videos}")' if self._last_dir_videos else ""
-            script = f'set f to (choose file with prompt "选择视频文件"{loc} with multiple selections allowed)\nset out to ""\nrepeat with p in f\n    set out to out & POSIX path of p & "\\n"\nend repeat\nout'
+            script = f'set f to (choose file with prompt "选择视频或页面图片"{loc} with multiple selections allowed)\nset out to ""\nrepeat with p in f\n    set out to out & POSIX path of p & "\\n"\nend repeat\nout'
             result, ran = _run_osascript(script)
             if ran:
                 paths = [p for p in result.strip().split("\n") if p]
@@ -2261,19 +2319,59 @@ class MainWindow(QMainWindow):
                 return
         opts = QFileDialog.Option.DontUseNativeDialog if sys.platform == "darwin" else QFileDialog.Option(0)
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "选择视频文件", self._last_dir_videos,
-            "视频 (*.mp4 *.mov *.avi *.mkv *.m4v *.wmv)",
+            self, "选择视频或页面图片", self._last_dir_videos,
+            "视频或图片 (*.mp4 *.mov *.avi *.mkv *.m4v *.wmv *.bmp *.jpeg *.jpg *.png *.tif *.tiff *.webp)",
             options=opts,
         )
         if paths:
             self._save_dir("videos", os.path.dirname(paths[0]))
             self._populate_video_table(paths)
 
+    def _pick_page_image_folder(self):
+        path = pick_folder(self, "选择页面图片文件夹", self._last_dir_videos)
+        if path:
+            self._save_dir("videos", path)
+            self._populate_video_table([path])
+
     def _populate_video_table(self, paths: list):
-        import av
+        try:
+            input_kind = classify_media_paths(paths)
+        except ValueError as exc:
+            QMessageBox.warning(self, "输入不支持", str(exc))
+            return
+
         self._video_row_selections = {}
         self.video_table.setRowCount(0)
+        self._video_input_kind = input_kind
+        self._page_video_settings_widget.setVisible(input_kind == "image")
+        if input_kind == "image":
+            page_paths = normalize_page_paths(paths)
+            if not page_paths:
+                QMessageBox.warning(self, "输入不支持", "过滤后没有有效页面图片")
+                self._video_input_kind = None
+                self._page_video_settings_widget.hide()
+                return
+            source_name = (
+                os.path.basename(os.path.normpath(paths[0]))
+                if len(paths) == 1 and os.path.isdir(paths[0])
+                else os.path.basename(os.path.dirname(page_paths[0])) or "页面图片"
+            )
+            row = self.video_table.rowCount()
+            self.video_table.insertRow(row)
+            item = QTableWidgetItem(source_name)
+            item.setData(Qt.ItemDataRole.UserRole, page_paths)
+            self.video_table.setItem(row, 0, item)
+            count_item = QTableWidgetItem(f"{len(page_paths)} 页")
+            count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.video_table.setItem(row, 1, count_item)
+            self.video_table.setRowHeight(row, 44)
+            self.video_table.setCellWidget(row, 2, self._make_video_tpl_btn(row, []))
+            return
+
+        import av
         for vp in paths:
+            if not is_valid_input_file(vp, "video"):
+                continue
             try:
                 with av.open(vp) as c:
                     vs = c.streams.video[0]
@@ -2315,7 +2413,9 @@ class MainWindow(QMainWindow):
 
         tasks = []
         for row in range(self.subfolder_table.rowCount()):
-            group_name = self.subfolder_table.item(row, 0).text()
+            source_item = self.subfolder_table.item(row, 0)
+            display_name = source_item.text()
+            group_name = source_item.data(Qt.ItemDataRole.UserRole) or display_name
             names = self._row_selections.get(row, [])
             templates = [t for name in names for t in [self.tm.load(name)] if t]
             if not templates: continue
@@ -2329,7 +2429,10 @@ class MainWindow(QMainWindow):
                     files = get_image_files(os.path.join(input_dir, group_name))
             else:
                 # Image mode
-                files = self._picked_image_files
+                files = [
+                    path for path in self._picked_image_files
+                    if is_valid_input_file(path, "image")
+                ]
 
             if files:
                 tasks.append((group_name, files, templates))
@@ -2353,25 +2456,40 @@ class MainWindow(QMainWindow):
         self._batch_runner.start()
 
     def _run_video_batch(self, output_dir: str):
-        from core.batch_runner import VideoRunner
         if self.video_table.rowCount() == 0:
-            QMessageBox.warning(self, "提示", "请先选择视频文件"); return
+            QMessageBox.warning(self, "提示", "请先选择视频或页面图片"); return
         tasks = []
         for row in range(self.video_table.rowCount()):
             item = self.video_table.item(row, 0)
-            video_path = item.data(Qt.ItemDataRole.UserRole)
+            input_data = item.data(Qt.ItemDataRole.UserRole)
             names = self._video_row_selections.get(row, [])
             templates = [t for name in names for t in [self.tm.load(name)] if t]
             if not templates:
                 QMessageBox.warning(self, "提示", f"请为「{item.text()}」选择场景模板"); return
             if any((getattr(t, "template_type", "screen") or "screen") != "screen" for t in templates):
                 QMessageBox.warning(self, "提示", "视频模式只支持屏幕类模板，请重新选择模板"); return
-            tasks.append((video_path, templates))
-        self._batch_runner = VideoRunner(
-            tasks, output_dir,
-            realism_enabled=self._realism_enabled,
-            realism_strength=self._realism_strength,
-        )
+            if self._video_input_kind == "image":
+                tasks.append((item.text(), input_data, templates))
+            else:
+                tasks.append((input_data, templates))
+        if self._video_input_kind == "image":
+            from core.page_video_runner import ImageSequenceVideoRunner
+            self._batch_runner = ImageSequenceVideoRunner(
+                tasks,
+                output_dir,
+                hold_seconds=self.page_hold_spin.value(),
+                turn_seconds=self.page_turn_spin.value(),
+                fps=self.page_fps_spin.value(),
+                realism_enabled=self._realism_enabled,
+                realism_strength=self._realism_strength,
+            )
+        else:
+            from core.batch_runner import VideoRunner
+            self._batch_runner = VideoRunner(
+                tasks, output_dir,
+                realism_enabled=self._realism_enabled,
+                realism_strength=self._realism_strength,
+            )
         self._batch_runner.progress.connect(self._on_progress)
         self._batch_runner.finished.connect(self._on_finished)
         self.btn_run.setVisible(False); self.btn_abort.setVisible(True)

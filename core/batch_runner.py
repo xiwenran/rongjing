@@ -17,8 +17,9 @@ from core.image_processor import (
     precompute_template_cache,
 )
 from core.realism_filter import apply_realism, precompute_realism
+from core.file_policy import is_valid_input_file, scan_input_files
+from core.output_paths import allocate_unique_directory, allocate_unique_file
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".wmv"}
 
 
@@ -54,13 +55,7 @@ def natural_sort_key(s: str):
 
 
 def get_image_files(folder: str):
-    files = []
-    for fn in sorted(os.listdir(folder), key=natural_sort_key):
-        if fn.startswith("."):
-            continue
-        if os.path.splitext(fn)[1].lower() in IMAGE_EXTS:
-            files.append(os.path.join(folder, fn))
-    return files
+    return [str(path) for path in scan_input_files(folder, "image")]
 
 
 class BatchRunner(QThread):
@@ -79,8 +74,20 @@ class BatchRunner(QThread):
         parent=None,
     ):
         super().__init__(parent)
-        self.tasks = tasks
+        os.makedirs(output_dir, exist_ok=True)
+        self.tasks = [
+            (
+                group_name,
+                [path for path in files if is_valid_input_file(path, "image")],
+                templates,
+            )
+            for group_name, files, templates in tasks
+        ]
         self.output_dir = output_dir
+        self.output_dirs = [
+            str(allocate_unique_directory(output_dir, self._source_name(group_name, files)))
+            for group_name, files, _templates in self.tasks
+        ]
         self.output_format = output_format
         self.output_width = output_width
         self.diversify_config = diversify_config
@@ -102,7 +109,10 @@ class BatchRunner(QThread):
             done = 0
             skipped = 0
 
-            for group_name, files, templates in self.tasks:
+            for (group_name, files, templates), source_output_dir in zip(
+                self.tasks, self.output_dirs
+            ):
+                files = [path for path in files if is_valid_input_file(path, "image")]
                 output_name_counts = Counter(t.name for t in templates)
                 for template in templates:
                     if self._abort:
@@ -112,7 +122,7 @@ class BatchRunner(QThread):
                     if output_name_counts[template.name] > 1:
                         category = getattr(template, "category", "模板") or "模板"
                         template_out_name = f"{category}-{template.name}"
-                    out_sub = os.path.join(self.output_dir, group_name, template_out_name)
+                    out_sub = os.path.join(source_output_dir, template_out_name)
                     os.makedirs(out_sub, exist_ok=True)
 
                     # 0 = use template/background size. Otherwise keep aspect ratio at target width.
@@ -244,9 +254,15 @@ class BatchRunner(QThread):
                                 self.progress.emit(done, total, skip_msg)
 
             if skipped:
-                self.finished.emit(True, f"完成！成功 {done - skipped} 张，跳过 {skipped} 张无法识别的图片")
+                self.finished.emit(
+                    True,
+                    f"完成！成功 {done - skipped} 张，跳过 {skipped} 张无法识别的图片\n"
+                    f"输出目录：{', '.join(self.output_dirs)}",
+                )
             else:
-                self.finished.emit(True, f"完成！共处理 {done} 张图片")
+                self.finished.emit(
+                    True, f"完成！共处理 {done} 张图片\n输出目录：{', '.join(self.output_dirs)}"
+                )
 
         except Exception as e:
             import traceback
@@ -254,12 +270,20 @@ class BatchRunner(QThread):
 
     def _first_readable_image_size(self, files: List[str]) -> Optional[Tuple[int, int]]:
         for path in files:
+            if not is_valid_input_file(path, "image"):
+                continue
             try:
                 with Image.open(path) as img:
                     return img.size
             except (UnidentifiedImageError, OSError):
                 continue
         return None
+
+    @staticmethod
+    def _source_name(group_name: str, files: List[str]) -> str:
+        if group_name in {"(根目录)", "图片批量"} and files:
+            return os.path.basename(os.path.normpath(os.path.dirname(files[0]))) or group_name
+        return group_name
 
 
 class VideoRunner(QThread):
@@ -273,8 +297,18 @@ class VideoRunner(QThread):
         Audio is preserved via PyAV (no external ffmpeg needed).
         """
         super().__init__(parent)
+        os.makedirs(output_dir, exist_ok=True)
         self.tasks = tasks
         self.output_dir = output_dir
+        self.output_dirs = [
+            str(
+                allocate_unique_directory(
+                    output_dir,
+                    os.path.splitext(os.path.basename(video_path))[0],
+                )
+            )
+            for video_path, _templates in tasks
+        ]
         self.realism_enabled = realism_enabled
         self.realism_strength = realism_strength
         self._abort = False
@@ -329,13 +363,6 @@ class VideoRunner(QThread):
                 text = str(exc).lower()
                 return "videotoolbox" in text or "avcodec_open2" in text
 
-            def _remove_partial_output(out_path: str):
-                try:
-                    if os.path.exists(out_path):
-                        os.remove(out_path)
-                except OSError:
-                    pass
-
             os.makedirs(self.output_dir, exist_ok=True)
 
             # Pre-scan frame counts
@@ -351,7 +378,9 @@ class VideoRunner(QThread):
                 total += max(n, 1) * len(templates)
 
             done = 0
-            for (video_path, templates), (n_frames, fps, ppt_size) in zip(self.tasks, meta):
+            for (video_path, templates), source_output_dir, (n_frames, fps, ppt_size) in zip(
+                self.tasks, self.output_dirs, meta
+            ):
                 if self._abort:
                     self.finished.emit(False, "已取消"); return
 
@@ -361,9 +390,9 @@ class VideoRunner(QThread):
                     if self._abort:
                         self.finished.emit(False, "已取消"); return
 
-                    out_dir = os.path.join(self.output_dir, vid_name, template.name)
+                    out_dir = os.path.join(source_output_dir, template.name)
                     os.makedirs(out_dir, exist_ok=True)
-                    out_path = os.path.join(out_dir, f"{vid_name}.mp4")
+                    out_path = str(allocate_unique_file(out_dir, f"{vid_name}.mp4"))
 
                     def _process_one(use_videotoolbox: bool):
                         nonlocal done
@@ -753,12 +782,14 @@ class VideoRunner(QThread):
                                 videotoolbox_runtime_ok = False
                                 done = done_before
                                 self._abort = False
-                                _remove_partial_output(out_path)
+                                out_path = str(allocate_unique_file(out_dir, f"{vid_name}.mp4"))
                                 use_videotoolbox = False
                                 continue
                             raise
 
-            self.finished.emit(True, f"完成！共处理 {done} 帧")
+            self.finished.emit(
+                True, f"完成！共处理 {done} 帧\n输出目录：{', '.join(self.output_dirs)}"
+            )
 
         except Exception as e:
             import traceback

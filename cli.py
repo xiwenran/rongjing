@@ -6,6 +6,7 @@
 用法：
   python cli.py list-templates
   python cli.py process --input <文件夹或图片路径...> --templates <模板名...> --output <输出目录> [--format PNG|JPEG]
+  python cli.py export-material --type ppt|word --input <文件或目录> --output <目录> [--max-pages N]
   python cli.py process ... --cover-source <封面源路径>
   python cli.py create-template --bg <背景图路径> [--name <模板名>] [--category <分类>] \
       [--preview-out <预览图路径>] [--json-result] [--force]
@@ -18,6 +19,7 @@ import os
 import re
 import shutil
 import sys
+from pathlib import Path
 
 TEMPLATES_DIR = os.path.expanduser("~/Library/Application Support/融景/templates")
 COLLAGES_DIR = os.path.expanduser("~/Library/Application Support/融景/collages")
@@ -28,13 +30,12 @@ from models.template_model import (
     normalize_render_preset,
     normalize_template_category,
 )
+from core.output_paths import allocate_unique_directory
+from core.file_policy import is_valid_input_file, scan_input_files
 
 
 def natural_sort_key(s: str):
     return [int(c) if c.isdigit() else c.lower() for c in re.split(r"(\d+)", s)]
-
-
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
 
 
 def load_template(name: str):
@@ -108,12 +109,11 @@ def collect_images(inputs: list[str]) -> list[str]:
     for inp in inputs:
         inp = os.path.expanduser(inp)
         if os.path.isdir(inp):
-            for fn in sorted(os.listdir(inp), key=natural_sort_key):
-                ext = os.path.splitext(fn)[1].lower()
-                if ext in IMAGE_EXTS:
-                    images.append(os.path.join(inp, fn))
-        elif os.path.isfile(inp):
+            images.extend(str(path) for path in scan_input_files(inp, "image"))
+        elif is_valid_input_file(inp, "image"):
             images.append(inp)
+        elif os.path.isfile(inp):
+            print(f"[警告] 不是可用图片，跳过：{inp}", file=sys.stderr)
         else:
             print(f"[警告] 路径不存在，跳过：{inp}", file=sys.stderr)
     return images
@@ -127,7 +127,7 @@ _COVER_RENAME_MAP = [
 ]
 
 
-def _place_covers(output_root: str, cover_source: str):
+def _place_covers(output_root: str, cover_source: str, *, quiet: bool = False):
     """
     将封面图复制到融景输出目录的每个模板子目录。
 
@@ -192,17 +192,19 @@ def _place_covers(output_root: str, cover_source: str):
                         shutil.copy2(src, os.path.join(tmpl_path, dst_n))
                         total_copied += 1
 
-    print(f"\n封面放置完成：")
-    print(f"  处理 {total_folders} 个模板文件夹")
-    print(f"  复制 {total_copied} 张封面")
-    if failed_topics:
-        print(f"  匹配失败 {len(failed_topics)} 个主题：{', '.join(failed_topics)}")
+    if not quiet:
+        print(f"\n封面放置完成：")
+        print(f"  处理 {total_folders} 个模板文件夹")
+        print(f"  复制 {total_copied} 张封面")
+        if failed_topics:
+            print(f"  匹配失败 {len(failed_topics)} 个主题：{', '.join(failed_topics)}")
 
 
 def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: str,
             cover_source: str | None = None, fit: str = "stretch",
             realism_enabled: bool = True, realism_strength: int = 70,
-            realism_strength_explicit: bool = False):
+            realism_strength_explicit: bool = False,
+            json_result: bool = False):
     # 延迟导入，避免系统没装 Pillow 时 list-templates 也报错
     sys.path.insert(0, os.path.dirname(__file__))
     from PIL import Image
@@ -217,72 +219,106 @@ def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: 
     output_dir = os.path.expanduser(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-    images = collect_images(inputs)
-    if not images:
+    source_groups = _collect_process_sources(inputs)
+    if not source_groups:
         print("[错误] 没有找到任何图片文件", file=sys.stderr)
         sys.exit(1)
 
     ext = ".png" if fmt.upper() == "PNG" else ".jpg"
     save_kwargs = {} if fmt.upper() == "PNG" else {"quality": 95}
 
-    total = len(images) * len(template_names)
-    done = 0
-
+    loaded_templates = []
     for tpl_name in template_names:
         try:
-            tpl = load_template(tpl_name)
+            loaded_templates.append((tpl_name, load_template(tpl_name)))
         except FileNotFoundError as exc:
             print(f"[错误] {exc}", file=sys.stderr)
             sys.exit(1)
-        tpl_key = tpl.get("_storage_key", tpl_name)
-        category = normalize_template_category(tpl.get("category", "未分类"))
-        tpl["category"] = category
-        tpl["render_preset"] = normalize_render_preset(category, tpl.get("render_preset"))
-        tpl_label = f"{tpl.get('name', tpl_key)} · {category}"
-        bg_path = tpl["background_path"]
-        if not os.path.exists(bg_path):
-            print(f"[错误] 模板 {tpl_label} 的背景图不存在：{bg_path}", file=sys.stderr)
-            sys.exit(1)
 
-        bg_img = Image.open(bg_path)
-        is_document = tpl.get("template_type") == "document_paper"
-        cache = None if is_document else precompute_template_cache(bg_img, tpl["screen_points"])
-        # 文档纸张类默认不套实拍质感滤镜（2026-08-07 用户定）：滤镜的环境光照与暗角
-        # 对课件截图是加分的（像随手拍屏），但 A4 文档是密排小字，压暗直接伤可读性——
-        # 实测教案页纸面平均亮度从 173 被压到 120，暗了三成。屏幕/大屏类保持默认开启。
-        # 用户显式传 --realism-strength 时以传入值为准，不被这条覆盖。
-        realism_default_off = is_document and not realism_strength_explicit
-        realism_strength_effective = 0 if (not realism_enabled or realism_default_off) else realism_strength
-        realism_cache = precompute_realism(bg_img, tpl["screen_points"], strength=realism_strength_effective)
+    source_runs = [
+        (name, images, str(allocate_unique_directory(output_dir, name)))
+        for name, images in source_groups
+    ]
+    total = sum(len(images) for _name, images, _out in source_runs) * len(template_names)
+    done = 0
 
-        out_sub = os.path.join(output_dir, tpl_key)
-        os.makedirs(out_sub, exist_ok=True)
+    for _source_name, images, source_output_dir in source_runs:
+        for tpl_name, tpl in loaded_templates:
+            tpl_key = tpl.get("_storage_key", tpl_name)
+            category = normalize_template_category(tpl.get("category", "未分类"))
+            tpl["category"] = category
+            tpl["render_preset"] = normalize_render_preset(category, tpl.get("render_preset"))
+            tpl_label = f"{tpl.get('name', tpl_key)} · {category}"
+            bg_path = tpl["background_path"]
+            if not os.path.exists(bg_path):
+                print(f"[错误] 模板 {tpl_label} 的背景图不存在：{bg_path}", file=sys.stderr)
+                sys.exit(1)
 
-        for i, img_path in enumerate(images, 1):
-            ppt_img = Image.open(img_path)
-            if fit in ("contain", "cover"):
-                ppt_img = fit_source_to_quad(ppt_img, tpl["screen_points"], mode=fit)
-            if is_document:
-                result = embed_document_paper_pil(
-                    ppt_img,
-                    bg_img,
-                    tpl["screen_points"],
-                    tpl.get("render_preset", "paper"),
+            bg_img = Image.open(bg_path)
+            is_document = tpl.get("template_type") == "document_paper"
+            cache = None if is_document else precompute_template_cache(bg_img, tpl["screen_points"])
+            realism_default_off = is_document and not realism_strength_explicit
+            realism_strength_effective = 0 if (not realism_enabled or realism_default_off) else realism_strength
+            realism_cache = precompute_realism(bg_img, tpl["screen_points"], strength=realism_strength_effective)
+
+            out_sub = os.path.join(source_output_dir, tpl_key)
+            os.makedirs(out_sub, exist_ok=True)
+
+            for i, img_path in enumerate(images, 1):
+                with Image.open(img_path) as ppt_img:
+                    if fit in ("contain", "cover"):
+                        ppt_img = fit_source_to_quad(ppt_img, tpl["screen_points"], mode=fit)
+                    if is_document:
+                        result = embed_document_paper_pil(
+                            ppt_img, bg_img, tpl["screen_points"], tpl.get("render_preset", "paper")
+                        )
+                    else:
+                        result = embed_image_pil_fast(ppt_img, cache)
+                result = apply_realism(result, realism_cache)
+                out_path = os.path.join(out_sub, f"{i}{ext}")
+                result.save(out_path, **save_kwargs)
+                done += 1
+                print(
+                    f"[{done}/{total}] 模板={tpl_label} 图={i} → {out_path}",
+                    file=sys.stderr if json_result else sys.stdout,
                 )
-            else:
-                result = embed_image_pil_fast(ppt_img, cache)
-
-            result = apply_realism(result, realism_cache)
-
-            out_path = os.path.join(out_sub, f"{i}{ext}")
-            result.save(out_path, **save_kwargs)
-            done += 1
-            print(f"[{done}/{total}] 模板={tpl_label} 图={i} → {out_path}")
-
-    print(f"\n完成！共处理 {done} 张，输出目录：{output_dir}")
 
     if cover_source:
-        _place_covers(output_dir, cover_source)
+        for _name, _images, source_output_dir in source_runs:
+            _place_covers(source_output_dir, cover_source, quiet=json_result)
+    payload = {"processed": done, "output_dirs": [out for _name, _images, out in source_runs]}
+    if json_result:
+        print(json.dumps(payload, ensure_ascii=False))
+    else:
+        print(f"\n完成！共处理 {done} 张，输出目录：{', '.join(payload['output_dirs'])}")
+    return payload
+
+
+def _collect_process_sources(inputs: list[str]) -> list[tuple[str, list[str]]]:
+    directory_sources = []
+    file_groups: dict[str, list[str]] = {}
+    for raw_input in inputs:
+        input_path = os.path.expanduser(raw_input)
+        if os.path.isdir(input_path):
+            images = collect_images([input_path])
+            if images:
+                directory_sources.append((os.path.basename(os.path.normpath(input_path)), images))
+        elif is_valid_input_file(input_path, "image"):
+            parent = os.path.dirname(input_path)
+            file_groups.setdefault(parent, []).append(input_path)
+        elif os.path.isfile(input_path):
+            print(f"[警告] 不是可用图片，跳过：{input_path}", file=sys.stderr)
+        else:
+            print(f"[警告] 路径不存在，跳过：{input_path}", file=sys.stderr)
+    for parent, files in file_groups.items():
+        files.sort(key=lambda path: natural_sort_key(os.path.basename(path)))
+        source_name = (
+            os.path.basename(os.path.normpath(parent))
+            if len(files) > 1
+            else os.path.splitext(os.path.basename(files[0]))[0]
+        )
+        directory_sources.append((source_name, files))
+    return directory_sources
 
 
 def _parse_pages(pages_arg: str | None, total: int) -> list[int]:
@@ -356,13 +392,21 @@ def collage(input_dir: str, output: str, template_name: str | None,
         output_height = 0
 
     input_dir = os.path.expanduser(input_dir)
-    if not os.path.isdir(input_dir):
-        print(f"[错误] 输入目录不存在：{input_dir}", file=sys.stderr)
+    if os.path.isdir(input_dir):
+        image_paths = [str(path) for path in scan_input_files(input_dir, "image")]
+        source_name = Path(input_dir).name or "拼图"
+    elif is_valid_input_file(input_dir, "image"):
+        image_paths = [input_dir]
+        source_name = Path(input_dir).stem or "拼图"
+    elif os.path.isfile(input_dir):
+        print(f"[错误] 输入文件不是可用图片：{input_dir}", file=sys.stderr)
+        sys.exit(1)
+    else:
+        print(f"[错误] 输入路径不存在：{input_dir}", file=sys.stderr)
         sys.exit(1)
 
-    image_paths = collect_images([input_dir])
     if not image_paths:
-        print(f"[错误] 输入目录下没有找到任何图片：{input_dir}", file=sys.stderr)
+        print(f"[错误] 输入路径下没有找到任何图片：{input_dir}", file=sys.stderr)
         sys.exit(1)
 
     page_indices = _parse_pages(pages, len(image_paths))
@@ -382,10 +426,11 @@ def collage(input_dir: str, output: str, template_name: str | None,
         output_height=output_height,
     )
 
-    output = os.path.expanduser(output)
-    out_parent = os.path.dirname(output)
-    if out_parent:
-        os.makedirs(out_parent, exist_ok=True)
+    requested_output = os.path.expanduser(output)
+    out_parent = os.path.dirname(requested_output) or "."
+    os.makedirs(out_parent, exist_ok=True)
+    actual_output_dir = allocate_unique_directory(out_parent, source_name)
+    output = str(actual_output_dir / os.path.basename(requested_output))
     result.save(output)
 
     sha256 = hashlib.sha256()
@@ -395,6 +440,7 @@ def collage(input_dir: str, output: str, template_name: str | None,
 
     info = {
         "output": output,
+        "output_dir": str(actual_output_dir),
         "size": list(result.size),
         "sha256": sha256.hexdigest(),
         "template": {
@@ -724,7 +770,36 @@ def dewatermark_cmd(input_path: str, output_path: str, strength: str, json_resul
         print(f"已去水印：{output_path}（强度={strength}）")
 
 
-def main():
+def export_material_cmd(document_type: str, input_path: str, output_dir: str,
+                        max_pages: int, backend: str | None) -> int:
+    """运行资料导出服务，并将本轮结构化汇总输出到 stdout。"""
+    from core.document_exporter import export_material
+
+    try:
+        summary = export_material(
+            document_type=document_type,
+            input_path=input_path,
+            output_dir=output_dir,
+            max_pages=max_pages,
+            backend=backend,
+            log=lambda message: print(message, file=sys.stderr),
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        print(f"[错误] {exc}", file=sys.stderr)
+        return 1
+    print(summary.to_json())
+    if summary.failed_count > 0 or summary.success_count < 1:
+        return 1
+    if len(summary.results) != summary.success_count:
+        return 1
+    for result in summary.results:
+        png_count = sum(1 for path in Path(result.output_dir).glob("*.png") if path.is_file())
+        if not result.success or result.pages_exported < 1 or png_count < result.pages_exported:
+            return 1
+    return 0
+
+
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="融景命令行工具")
     sub = parser.add_subparsers(dest="cmd")
 
@@ -748,6 +823,7 @@ def main():
     p.add_argument("--realism-strength", type=int, default=None,
                    help="实拍质感滤镜强度，0-100（屏幕类默认 70，文档纸张类默认 0 即关闭）；"
                         "显式传入时对两类模板都以传入值为准")
+    p.add_argument("--json-result", action="store_true", help="以 JSON 格式返回本轮实际输出目录")
 
     c = sub.add_parser("collage", help="将一批图片拼接成单张拼图")
     c.add_argument("--input-dir", required=True, help="输入图片目录")
@@ -795,7 +871,18 @@ def main():
     dw.add_argument("--strength", required=True, choices=["low", "medium", "high"], help="去水印强度")
     dw.add_argument("--json-result", action="store_true", help="以 JSON 格式输出结果到 stdout")
 
-    args = parser.parse_args()
+    em = sub.add_parser("export-material", help="将 PPT 或 Word 资料递归导出为 PNG 页面")
+    em.add_argument("--type", dest="document_type", required=True, choices=["ppt", "word"],
+                    help="资料类型；目录扫描只处理所选类型")
+    em.add_argument("--input", required=True, help="输入 PPT/Word 文件或目录（目录递归扫描）")
+    em.add_argument("--output", required=True, help="输出根目录；每个来源自动分配不覆盖子目录")
+    em.add_argument("--max-pages", "--max-slides", dest="max_pages", type=int, default=17,
+                    help="每个文件最多导出页数（默认 17；兼容 --max-slides）")
+    em.add_argument("--backend", default=None,
+                    choices=["ppt_mac", "ppt_com", "word_mac", "word_com", "libreoffice"],
+                    help="指定转换后端；默认按当前平台自动选择并回退")
+
+    args = parser.parse_args(argv)
 
     if args.cmd == "list-templates":
         list_templates()
@@ -804,7 +891,8 @@ def main():
                 cover_source=args.cover_source, fit=args.fit,
                 realism_enabled=not args.no_realism,
                 realism_strength=70 if args.realism_strength is None else args.realism_strength,
-                realism_strength_explicit=args.realism_strength is not None)
+                realism_strength_explicit=args.realism_strength is not None,
+                json_result=args.json_result)
     elif args.cmd == "collage":
         collage(args.input_dir, args.output, args.template, args.rows, args.cols,
                 args.pages, json_result=args.json_result)
@@ -818,9 +906,14 @@ def main():
                       args.decor, args.light, args.angle, args.extra, args.json_result)
     elif args.cmd == "dewatermark":
         dewatermark_cmd(args.input, args.output, args.strength, args.json_result)
+    elif args.cmd == "export-material":
+        return export_material_cmd(
+            args.document_type, args.input, args.output, args.max_pages, args.backend
+        )
     else:
         parser.print_help()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

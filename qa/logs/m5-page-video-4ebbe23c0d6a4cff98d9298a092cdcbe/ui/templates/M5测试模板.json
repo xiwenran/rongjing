@@ -1,0 +1,27 @@
+{
+  "name": "M5测试模板",
+  "background_path": "~/rongjing/qa/logs/m5-page-video-4ebbe23c0d6a4cff98d9298a092cdcbe/ui/backgrounds/M5测试模板_bg.png",
+  "screen_points": [
+    [
+      0,
+      0
+    ],
+    [
+      97,
+      0
+    ],
+    [
+      97,
+      65
+    ],
+    [
+      0,
+      65
+    ]
+  ],
+  "output_width": 0,
+  "output_height": 0,
+  "category": "教室场景",
+  "template_type": "screen",
+  "render_preset": "clear"
+}

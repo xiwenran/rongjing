@@ -1,0 +1,6 @@
+codec=h264
+fps=10.0
+size=96x64
+frames=10
+pts=[0, 1024, 2048, 3072, 4096, 5120, 6144, 7168, 8192, 9216]
+video=~/rongjing/qa/logs/m5-page-video-4ebbe23c0d6a4cff98d9298a092cdcbe/real-sample/output/三页样本/M5测试模板/三页样本.mp4

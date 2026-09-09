@@ -1,8 +1,6 @@
 import hashlib
 import math
 import os
-import shutil
-import subprocess
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
@@ -38,6 +36,9 @@ from PyQt6.QtWidgets import (
 from core.collage_batch_runner import CollageBatchRunner
 from core.collage_processor import calculate_auto_layout, calculate_auto_split, create_collage
 from core.diversifier import DiversifyConfig, diversify_image
+from core.document_exporter import export_material
+from core.file_policy import is_valid_input_file, natural_sort_key, scan_input_files
+from core.output_paths import allocate_unique_directory
 from models.collage_model import CollageManager, CollageTemplate
 from ui.diversify_widget import DiversifyWidget
 
@@ -60,7 +61,6 @@ _ASPECTS = {
     "自适应": 0,
 }
 
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
 _COLLAGE_MANIFEST = ".rongjing_collage_manifest.json"
 
 _BG_COLORS = [
@@ -80,74 +80,35 @@ class _PPTImportWorker(QThread):
     finished_ok = pyqtSignal(str)
     failed = pyqtSignal(str)
 
-    def __init__(self, pptx_path: str, export_dir: str, parent=None):
+    def __init__(self, pptx_path: str, export_dir: str, service=export_material, parent=None):
         super().__init__(parent)
         self._pptx_path = pptx_path
         self._export_dir = export_dir
+        self._service = service
 
     def run(self):
-        os.makedirs(self._export_dir, exist_ok=True)
-        pdf_path = os.path.join(self._export_dir, "slides.pdf")
-
-        script = (
-            'on run argv\n'
-            '    set pptxFile to (POSIX file (item 1 of argv))\n'
-            '    set pdfFile to (POSIX file (item 2 of argv))\n'
-            '    tell application "Microsoft PowerPoint"\n'
-            '        open pptxFile\n'
-            '        delay 2\n'
-            '        set pres to active presentation\n'
-            '        save pres in pdfFile as save as PDF\n'
-            '        delay 1\n'
-            '        close pres saving no\n'
-            '    end tell\n'
-            'end run'
-        )
-
-        self.progress.emit("正在通过 PowerPoint 导出 PDF…")
+        self.progress.emit("正在通过统一资料导出服务生成页图…")
         try:
-            result = subprocess.run(
-                ["osascript", "-e", script, self._pptx_path, pdf_path],
-                capture_output=True, text=True, timeout=120,
+            summary = self._service(
+                document_type="ppt",
+                input_path=self._pptx_path,
+                output_dir=self._export_dir,
+                max_pages=9999,
             )
-        except subprocess.TimeoutExpired:
-            self.failed.emit("PPT 导出超时\nPowerPoint 导出超过 2 分钟，请重试。")
-            return
-
-        if result.returncode != 0 or not os.path.isfile(pdf_path):
-            self.failed.emit(
-                "PPT 导出失败\n"
-                "无法调用 PowerPoint 导出 PDF。\n"
-                "请确认已安装 Microsoft PowerPoint for Mac。\n\n"
-                f"错误信息：{result.stderr[:200]}"
-            )
-            return
-
-        self.progress.emit("正在生成图片…")
-        try:
-            import fitz
-            doc = fitz.open(pdf_path)
-            for i, page in enumerate(doc):
-                pix = page.get_pixmap(dpi=200)
-                out_path = os.path.join(self._export_dir, f"slide-{i + 1:03d}.png")
-                pix.save(out_path)
-            doc.close()
-        except ImportError:
-            self.failed.emit(
-                "缺少 PyMuPDF\n"
-                "未找到 fitz 模块。\n请在终端执行：pip install PyMuPDF"
-            )
-            return
         except Exception as exc:
-            self.failed.emit(f"图片转换失败\nPDF 转 PNG 失败。\n\n错误信息：{str(exc)[:200]}")
+            self.failed.emit(f"PPT 导入失败\n{str(exc)[:300]}")
             return
 
-        try:
-            os.remove(pdf_path)
-        except OSError:
-            pass
-
-        self.finished_ok.emit(self._export_dir)
+        successful = [result for result in summary.results if result.success]
+        if not successful:
+            detail = summary.failed_files[0]["error"] if summary.failed_files else "未生成页图"
+            self.failed.emit(f"PPT 导入失败\n{detail}")
+            return
+        result_dir = successful[0].output_dir
+        if not scan_input_files(result_dir, "image"):
+            self.failed.emit("PPT 导入失败\n转换服务未返回有效页图。")
+            return
+        self.finished_ok.emit(result_dir)
 
 
 class _ThumbnailTile(QWidget):
@@ -224,7 +185,7 @@ class CollageTab(QWidget):
 
     config_changed = pyqtSignal(object)
 
-    def __init__(self, collages_dir: str, parent=None):
+    def __init__(self, collages_dir: str, parent=None, *, document_export_service=export_material):
         super().__init__(parent)
         self._mgr = CollageManager(collages_dir)
         self._current_collage: CollageTemplate | None = None
@@ -239,6 +200,7 @@ class CollageTab(QWidget):
         self._preview_collage_index = 0
         self._collage_runner: CollageBatchRunner | None = None
         self._ppt_import_worker: _PPTImportWorker | None = None
+        self._document_export_service = document_export_service
         self._ppt_import_current_name = ""
         self._ppt_import_queue: list[str] = []
         self._ppt_import_results: list[tuple[str, str]] = []
@@ -325,11 +287,11 @@ class CollageTab(QWidget):
         if not urls:
             return
         path = urls[0].toLocalFile()
-        if path.lower().endswith((".pptx", ".ppt")):
+        if is_valid_input_file(path, "ppt"):
             self._start_ppt_imports([path])
         elif os.path.isdir(path):
             self._set_input_dir(path)
-        elif os.path.isfile(path) and os.path.splitext(path)[1].lower() in _IMAGE_EXTS:
+        elif is_valid_input_file(path, "image"):
             self._set_input_dir(os.path.dirname(path))
 
     # ── UI build ──────────────────────────────────────────────────
@@ -710,18 +672,24 @@ class CollageTab(QWidget):
         )
         if not paths:
             return
-        ppt_paths = [p for p in paths if p.lower().endswith((".pptx", ".ppt"))]
-        image_paths = [p for p in paths if os.path.splitext(p)[1].lower() in _IMAGE_EXTS]
+        ppt_paths = [p for p in paths if is_valid_input_file(p, "ppt")]
+        image_paths = [p for p in paths if is_valid_input_file(p, "image")]
         if ppt_paths:
             self._start_ppt_imports(ppt_paths)
         elif image_paths:
-            self._set_image_files(image_paths, "已选图片", os.path.dirname(image_paths[0]))
+            parent_dir = os.path.dirname(image_paths[0])
+            source_name = Path(parent_dir).name or "拼图"
+            self._set_image_files(
+                sorted(image_paths, key=natural_sort_key), source_name, parent_dir
+            )
 
     def _start_ppt_imports(self, ppt_paths: list[str]):
         if self._ppt_import_worker and self._ppt_import_worker.isRunning():
             QMessageBox.warning(self, "PPT 正在导入", "请等待当前 PPT 导入完成。")
             return
-        self._ppt_import_queue = list(ppt_paths)
+        self._ppt_import_queue = [
+            path for path in ppt_paths if is_valid_input_file(path, "ppt")
+        ]
         self._ppt_import_results = []
         self._ppt_import_current_name = ""
         self._import_next_ppt()
@@ -737,33 +705,17 @@ class CollageTab(QWidget):
             QMessageBox.warning(self, "PPT 正在导入", "请等待当前 PPT 导入完成。")
             return
 
+        if not is_valid_input_file(pptx_path, "ppt"):
+            self._import_next_ppt()
+            return
         display_name = self._unique_import_name(Path(pptx_path).stem)
         self._ppt_import_current_name = display_name
         export_dir = self._ppt_export_dir(pptx_path)
-        cached_pngs = []
-        if os.path.isdir(export_dir):
-            cached_pngs = [
-                name for name in os.listdir(export_dir)
-                if os.path.splitext(name)[1].lower() == ".png"
-            ]
-        if cached_pngs:
-            answer = QMessageBox.question(
-                self,
-                "使用已导出的图片",
-                f"已导出过 {len(cached_pngs)} 页，是否直接使用？",
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                self._ppt_import_results.append((display_name, export_dir))
-                self._import_next_ppt()
-                return
-
-        if os.path.isdir(export_dir):
-            shutil.rmtree(export_dir, ignore_errors=True)
-        os.makedirs(export_dir, exist_ok=True)
-
         self._import_folder_btn.setEnabled(False)
         self._import_file_btn.setEnabled(False)
-        self._ppt_import_worker = _PPTImportWorker(pptx_path, export_dir, self)
+        self._ppt_import_worker = _PPTImportWorker(
+            pptx_path, export_dir, self._document_export_service, self
+        )
         self._ppt_import_worker.progress.connect(self._on_ppt_import_progress)
         self._ppt_import_worker.finished_ok.connect(self._on_ppt_import_done)
         self._ppt_import_worker.failed.connect(self._on_ppt_import_failed)
@@ -930,7 +882,7 @@ class CollageTab(QWidget):
             return []
         files = []
         base = os.path.abspath(path)
-        for root, dirs, names in os.walk(path):
+        for root, dirs, _names in os.walk(path):
             if os.path.abspath(root) != base and self._is_generated_collage_dir(root):
                 dirs[:] = []
                 continue
@@ -939,27 +891,21 @@ class CollageTab(QWidget):
                 if not name.startswith(".")
                 and not self._is_generated_collage_dir(os.path.join(root, name))
             ]
-            for name in sorted(names):
-                if self._is_source_image_name(name):
-                    files.append(os.path.join(root, name))
-        files.sort(key=lambda p: self._natural_key(p))
+            files.extend(str(file_path) for file_path in scan_input_files(root, "image"))
+        files.sort(key=natural_sort_key)
         return files
 
     def _find_image_subfolders(self, path: str) -> list[tuple[str, list[str]]]:
         if not os.path.isdir(path):
             return []
         items = []
-        for name in sorted(os.listdir(path), key=self._natural_key):
+        for name in sorted(os.listdir(path), key=natural_sort_key):
             sub = os.path.join(path, name)
             if os.path.isdir(sub) and not name.startswith(".") and not self._is_generated_collage_dir(sub):
                 files = self._scan_image_files(sub)
                 if files:
                     items.append((name, files))
         return items
-
-    @staticmethod
-    def _is_source_image_name(name: str) -> bool:
-        return not name.startswith(".") and os.path.splitext(name)[1].lower() in _IMAGE_EXTS
 
     @staticmethod
     def _is_generated_collage_dir(path: str) -> bool:
@@ -1187,8 +1133,9 @@ class CollageTab(QWidget):
             return
         cfg = self.get_current_config()
         diversify_cfg = self._diversify.get_config()
+        out_dir = self._output_dir_for_source(self._source_name)
         self._collage_runner = CollageBatchRunner(
-            self._image_files, cfg, self._output_dir_for_source(self._source_name),
+            self._image_files, cfg, out_dir,
             self._format_combo.currentText(),
             self._output_count_spin.value(),
             set(self._excluded_indices),
@@ -1222,8 +1169,7 @@ class CollageTab(QWidget):
                 self._batch_callback(True, "")
             return
 
-        name, files, cfg, output_count, excluded = self._batch_queue.pop(0)
-        out_dir = self._output_dir_for_source(name)
+        name, files, cfg, output_count, excluded, out_dir = self._batch_queue.pop(0)
 
         self._collage_runner = CollageBatchRunner(
             files, cfg, out_dir,
@@ -1247,11 +1193,11 @@ class CollageTab(QWidget):
         min_outputs = max(1, math.ceil(selected_count / max(1, cfg.total_cells))) if selected_count else 1
         output_count = int(state.get("output_count", 0)) if state else 0
         output_count = min(max(min_outputs, output_count), max(1, selected_count))
-        return name, list(files), cfg, output_count, set(excluded)
+        out_dir = self._output_dir_for_source(name)
+        return name, list(files), cfg, output_count, set(excluded), out_dir
 
     def _output_dir_for_source(self, source_name: str) -> str:
-        clean = self._safe_folder_name(source_name or "拼图")
-        return os.path.join(self._output_dir, clean)
+        return str(allocate_unique_directory(self._output_dir, source_name or "拼图"))
 
     @staticmethod
     def _safe_folder_name(name: str) -> str:

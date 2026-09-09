@@ -1,91 +1,77 @@
 ---
 name: rongjing
-description: 融景图片合成：把 PPT 截图/图片嵌入实拍背景大屏，批量生成合成图。触发词：融景、合成图、嵌入大屏、PPT嵌入背景、把图片嵌入模板、大屏合成、用模板合成。
+description: 融景图片与资料处理：把图片嵌入实拍模板、生成页面序列视频，或导出 PPT/Word 页面。触发词：融景、合成图、嵌入大屏、PPT嵌入背景、把图片嵌入模板、大屏合成、用模板合成、资料导出、页面翻页视频。
 ---
 
 # 融景 Skill
 
-将用户提供的图片（PPT截图等）透视嵌入到实拍背景图的屏幕区域，批量生成合成图片。
+用于图片透视合成、PPT/Word 页面导出和 App 内页面序列视频。CLI 入口为 `python3 ~/rongjing/cli.py <子命令>`。
 
-## CLI 路径
+## 触发条件
 
-```
-python3 ~/rongjing/cli.py <子命令>
-```
+- 图片或 PPT 截图需要嵌入融景模板时，使用 `process`。
+- PPT 或 Word 需要导出为 PNG 页面时，使用 `export-material`；完整的资料转图或笔记流水线分别进入 `material-exporter`、`ppt-notes-pipeline`。
+- 图片、图片文件夹或真实视频需要生成视频时，使用融景 App 的视频入口：真实视频交给 `VideoRunner`，图片走页面序列视频。
+- 需要创建模板时，使用 App 可视化标注，或使用 `create-template` 自动识别。
 
-## 工作流程
+## 硬底线
 
-### Step 0：了解用户需求
+- PPT 与 Word 按 `--type` 严格分流，目录扫描只接收所选类型。
+- 输入扫描先过滤隐藏文件、AppleDouble `._*`、Office 临时文件 `~$*` 和非文件项，再排序、计数、选封面、生成 manifest 和组装任务清单。
+- 拼图、图片合成、真实视频和资料导出每次分配新来源目录；重名时使用 `_2`、`_3`，不覆盖或清理旧产物。
+- 跨分类同名模板使用 `list-templates` 返回的 `key`，避免选错模板。
+- 执行后报告实际输出目录、成功数量、失败项和未验证边界，不把 CLI 返回 0 或文件存在单独当作最终验收。
 
-用户会说类似：
-- "用模板3，处理桌面上的图片文件夹"
-- "帮我合成，用1和2号模板"
-- "把 ~/Downloads/ppt截图/ 用所有模板合成"
+## CLI 入口
 
-需要确认三件事：
-1. **输入**：图片文件夹路径 或 具体图片路径（可多个）
-2. **模板**：用哪些模板（名称或编号），不确定时先列出可用模板让用户选
-3. **输出目录**：没指定时默认用 `~/Desktop/融景输出/`
-
-### Step 1：列出可用模板（需要时）
-
-```bash
-cd ~/rongjing && python3 cli.py list-templates
-```
-
-输出 JSON，展示给用户：模板 `key` + 显示名称 + 分类 + 背景图文件名。同名模板按分类区分时，后续命令必须使用 `key`。
-
-### Step 2：确认参数后执行
+### 图片合成
 
 ```bash
 cd ~/rongjing && python3 cli.py process \
   --input <路径1> [路径2 ...] \
   --templates <模板key1> [模板key2 ...] \
   --output <输出目录> \
-  --format JPEG
+  [--format PNG|JPEG] \
+  [--cover-source <封面源目录>] \
+  [--fit stretch|contain|cover] \
+  [--no-realism] \
+  [--realism-strength 0-100] \
+  [--json-result]
 ```
 
-- `--input`：文件夹（自动扫描内部图片）或具体图片文件，可传多个
-- `--templates`：模板 `key`，或没有重名时的唯一模板名称；同名模板必须用 `list-templates` 里的 `key`
-- `--format`：默认 JPEG（质量95），需无损时用 PNG
-- 实拍质感滤镜**默认开启**（强度 70），无需加任何参数：合成结果会套上符合该背景图的环境光照，并做拍屏损耗（动态范围收窄、轻失焦、暗部彩色噪点、暗角），让画面像随手拍下来的而不是数字贴图。只作用于屏幕/纸面区域，背景像素零改动。需要干净无滤镜的输出时加 `--no-realism`；想调轻重用 `--realism-strength 0-100`（0 等效关闭）
-- `--fit`：源图与模板承载区宽高比不一致时的适配方式，默认 `stretch`（拉伸铺满，零变化）；`contain` 等比缩放并补白（letterbox）到承载区比例，内容完整但纸面留边；`cover` 等比铺满并居中裁掉溢出，内容满版直达纸边不留补白。`cover` 的实际裁切幅度不是固定「只裁一点」，取决于源图与承载区宽高比的差值：比例接近的模板（如近 A4 俯拍）裁掉约 3%~6%，比例差距大的模板（大透视/明显偏离 A4）可裁到 20% 以上；裁切方向也不固定——横版源图（如 PPT 截图，融景主力输入）配竖版承载区时裁的是左右，配横版承载区时裁的是顶底，不能一概而论。选 `cover` 前先看目标模板的承载区宽高比（`list-templates` 或预览图）与源图是否接近，比例差距明显、内容必须完整时改用 `contain`
+`--format` 默认 JPEG。`--fit` 默认 `stretch`；`contain` 保留完整内容并补白，`cover` 铺满后居中裁切。屏幕模板的实拍质感默认强度为 70，文档纸张模板默认为 0；显式传入 `--realism-strength` 时以参数为准。
 
-### Step 3：报告结果
+### 资料导出
 
-执行完成后告诉用户：
-- 处理了多少张图片
-- 使用了哪些模板
-- 输出目录在哪里（可点击打开）
+```bash
+cd ~/rongjing && python3 cli.py export-material \
+  --type ppt|word \
+  --input <文件或目录> \
+  --output <输出根目录> \
+  [--max-pages <页数>] \
+  [--backend ppt_mac|ppt_com|word_mac|word_com|libreoffice]
+```
 
-**Token 节制要求（与 ppt-batch-tool 衔接）**：融景环节只输出摘要给上下文，不读完整生成 JSON。
-报告格式：主题数、模板数、缺图/失败项（文件名）、输出目录。不逐一展开每张合成图路径。
-若上游已有 `convert_summary.json`，直接引用其 `success_count` 和 `output_dir`，无需重新列举图片文件。
+`--max-pages` 默认 17，并兼容 `--max-slides`。省略 `--backend` 时按当前平台自动选择并回退。
 
-**多主题任务的后续衔接**：若本次合成了多个主题，完成重整脚本（把连续编号切回「主题/模板/图片」结构）并验证文件数正确后，下一步取决于起点——从 PPT 开始的全链路任务走 **zhifa-pipeline** skill；已有合成图只需上传走 **zhifa-upload** skill。
-
-## 注意事项
-
-- 模板存储在 `~/Library/Application Support/融景/templates/`，用 `list-templates` 查看
-- 每个模板对应一张背景图，合成结果按 `输出目录/模板key/1.jpg, 2.jpg...` 存放
-- 如果背景图路径不存在，CLI 会报错并说明哪个模板有问题
-- 用户说"所有模板"时，先 list-templates 获取 `key` 列表，再传给 --templates
-- **多主题批量合成的输出结构（必看）**：`--input` 传入多个文件夹（多主题）时，融景把所有主题的图片合并后按模板分目录、连续编号——输出是 `模板名/1.jpg ~ N.jpg`，不会按主题切分。若需要「主题/模板/图片」结构，合成完成后必须额外通过 echo-bridge 的 `desktop_intake_send` 派发到 Codex（codex-rescue 插件已于 2026-07-27 停用）写重整脚本，按每个主题的图片数量把连续编号切回各自的主题子目录，并验证每个主题子目录的文件数与用户给出的数字一致。**多主题作业前必须先问用户"每个主题各有几张图"**，拿到确认的数字后才能继续，不可跳过。
-
-## 新建模板（create-template）
+### 新建模板
 
 ```bash
 cd ~/rongjing && python3 cli.py create-template \
   --bg <背景图路径> [--name <模板名>] [--category <分类>] \
   [--detect screen|paper] [--inset-ratio <比例>] \
-  [--preview-out <预览图路径>] [--json-result] [--force]
+  [--preview-out <预览图路径>] [--json-result] [--force] \
+  [--no-vlm] [--min-screen-width <像素>]
 ```
 
 - `--detect`：识别方式，默认 `screen`（走绿幕→VLM 融合→经典算法三级识别路径，面向屏幕/白板类背景，零变化）；`paper` 走亮区分割识别纸张四角，适用于「实拍空白纸张放在桌面上」的文档纸张模板背景
 - `--inset-ratio`：仅 `--detect paper` 生效，默认 `0.03`；识别到的纸张四角会朝质心方向按该比例内缩，避免合成内容压在纸张物理边缘
 - `--category 文档纸张`：会让模板的 `template_type` 落为 `document_paper`，合成时走纸张光影混合路径（`embed_document_paper_pil`），而不是屏幕透视路径
+- `--no-vlm`：关闭 VLM 粗定位融合，仅使用经典识别；`--min-screen-width` 默认 1600，屏幕区域低于该宽度时按上限 3 倍放大背景图
 - 建完模板务必看一眼 `--preview-out` 生成的预览图（四角连线+绿点），确认识别准确再投入批量合成；`--json-result` 输出里的 `quality.aspect_ratio`/`area_ratio`/`method` 可用于快速判断识别质量
 
-## 不支持的功能
+## 细则指针
 
-- 视频合成（需要 PyAV，当前 CLI 只支持图片）。注意：视频笔记不经过融景合成，视频文件由 zhifa-upload / zhifa-pipeline 直接上传飞书
+- 功能、输出目录和当前验证边界见 `README.md`「功能」「输出文件命名规则」「当前验证边界」节。
+- 已实现项目与待验证项见 `FEATURES.md`「十五、资料导出、统一文件规则与页面翻页视频」节。
+- 资料批量导出与笔记全流程分别见 `skills/material-exporter/SKILL.md`、`skills/ppt-notes-pipeline/SKILL.md` 的「工作流程」节。

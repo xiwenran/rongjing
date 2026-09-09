@@ -21,7 +21,7 @@ jobs:
           python-version: '3.13'
 
       - name: 安装依赖
-        run: pip install PyQt6 Pillow numpy av pyinstaller
+        run: pip install -r requirements.txt
 
       - name: 确保 templates 目录存在
         run: New-Item -ItemType Directory -Force -Path templates
@@ -43,6 +43,7 @@ jobs:
             --add-data "_build_info.py;." `
             --hidden-import "PIL._tkinter_finder" `
             --hidden-import "av" `
+            --hidden-import "comtypes.client" `
             --collect-all "av" `
             --noconfirm `
             main.py
