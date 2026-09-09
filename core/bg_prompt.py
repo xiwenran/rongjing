@@ -49,7 +49,7 @@ _TRANSLATIONS = {
     "柔光": "soft diffused light",
     "偏暗氛围": "dim moody atmospheric lighting",
     "正面平视": "front eye-level camera angle",
-    "略偏侧角": "camera positioned on the laptop's right side and shooting diagonally left, with the right side closer and the left side farther away",
+    "略偏侧角": "a very mild 4-7 degree side angle, camera positioned just to the laptop's right and shooting slightly left, with the right side only subtly closer, almost front-facing, with minimal perspective distortion",
     "略微仰视": "slightly low-angle camera angle",
     "有植物": "with a small potted plant on the desk",
     "有咖啡杯": "with a coffee cup or tea cup on the desk",
@@ -131,6 +131,15 @@ def build_prompt(
         ])
     elif target:
         parts.append(_TRANSLATIONS.get(target, target))
+        if target == "笔记本室内":
+            parts.extend([
+                "independently create a believable ordinary nighttime indoor environment in a teacher's home, rental room, or dorm room for this image",
+                "randomly vary the room layout, wall condition, lighting color temperature, desktop material, nearby furniture, window or curtain state, and a few everyday personal objects",
+                "make the chosen combination coherent and natural like one real lived-in space, with only a small number of contextually appropriate objects",
+                "when generating multiple images, make every result clearly distinct even at thumbnail size by avoiding repetition of the same room, lighting, furniture, and object combination",
+                "possible inspiration examples include a bedroom study desk, dorm room corner, dining table, window-side desk, or balcony corner; these examples are not a fixed list, and other reasonable modest indoor settings are welcome",
+                "any explicit scene, decor, lighting, or camera-angle selection appended later takes priority and should guide these variations",
+            ])
 
     # Device & scene
     if device and not is_document:
@@ -152,7 +161,7 @@ def build_prompt(
                 "the active display area has true 16:9 widescreen proportions in its own plane, never square or 4:3, and remains unmistakably widescreen after perspective",
                 "all four screen corners fully visible; the screen occupies 85-92% of the image width and 43-52% of the image height",
                 "nighttime handheld phone snapshot taken close to the laptop like a casual real user photo",
-                "ordinary modest home or dorm room, plain desk and wall, low-saturation colors, white or warm-white household lamp",
+                "plain lived-in surroundings, low-saturation colors, white or warm-white household lamp",
                 "slight sensor noise and mild optical softness, while the screen outline and four corners remain clear",
                 "only a narrow strip of keyboard visible along the bottom edge, with natural low-contrast keycap characters allowed",
             ])
