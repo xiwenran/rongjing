@@ -8,7 +8,12 @@
 
 ## 当前主线状态
 
-（空）
+- 预览弹窗 QtMultimedia 原生崩溃修复 🚧
+  - 当前阶段：用 PyAV 解码短 MP4，改为 QLabel + QTimer 应用内循环播放
+  - 一句话现状：已确认 QtMultimedia 的原生 Metal 视频窗口在弹窗打开时触发 EXC_BAD_ACCESS，开始移除该播放链路
+  - 阻塞：无
+  - 最近验证：崩溃报告主线程栈定位到 AGX Metal → QtMultimedia QVideoWindow::event Expose → NSSheet QDialog.open
+  - commit hash：待实现并验证后补充
 
 ## 待确认区（等用户裁决：还在做 / 已关闭 / 废弃归档）
 
