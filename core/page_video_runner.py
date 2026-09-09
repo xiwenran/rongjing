@@ -25,7 +25,12 @@ from core.core_image_page_curl import (
     render_batch,
 )
 from core.image_processor import embed_image_pil, embed_image_pil_fast, precompute_template_cache
-from core.output_paths import allocate_unique_directory, allocate_unique_file
+from core.output_paths import (
+    allocate_unique_directory,
+    allocate_unique_file,
+    move_file_noreplace,
+    move_unique_file,
+)
 from core.realism_filter import apply_realism, precompute_realism
 
 
@@ -418,7 +423,7 @@ class ImageSequenceVideoRunner(QThread):
         else:
             template_dir = Path(source_output_dir) / template.name
             template_dir.mkdir(parents=True, exist_ok=True)
-            output_path = allocate_unique_file(template_dir, f"{Path(source_name).stem}.mp4")
+            output_path = template_dir / f"{Path(source_name).stem}.mp4"
         time_base = Fraction(1, self.fps)
         mapping = transition_frame_indices(turn_frames, len(transitions[0])) if transitions else []
 
@@ -463,11 +468,14 @@ class ImageSequenceVideoRunner(QThread):
             if self._abort:
                 self.output_paths.append(str(attempt_path))
                 return done + encoded_count, codec_name, str(attempt_path)
-            if output_path.exists():
-                raise FileExistsError(f"输出文件已存在：{output_path.name}")
-            attempt_path.rename(output_path)
-            self.output_paths.append(str(output_path))
-            return done + encoded_count, codec_name, str(output_path)
+            if self.output_path:
+                published_path = move_file_noreplace(attempt_path, output_path)
+            else:
+                published_path = move_unique_file(
+                    attempt_path, output_path.parent, output_path.name
+                )
+            self.output_paths.append(str(published_path))
+            return done + encoded_count, codec_name, str(published_path)
 
         raise RuntimeError(f"VideoToolbox 编码失败：{last_error}")
 

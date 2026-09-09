@@ -460,6 +460,90 @@ def test_videotoolbox_actual_failure_retries_libx264_without_overwrite():
     assert calls[0][2] == calls[1][2] == 2, "回退必须重放完整帧计划"
 
 
+def test_formal_output_publishes_attempt_without_final_placeholder():
+    import core.page_video_runner as module
+
+    folder = ROOT / "reserved-output"
+    pages = make_pages(folder, colors=((200, 10, 10),))
+    template = make_template(folder)
+    output = folder / "output"
+    output.mkdir()
+    attempts = []
+
+    def fake_attempt(self, *, attempt_path, frames, **_kwargs):
+        attempts.append(Path(attempt_path))
+        assert not (attempts[-1].parent / "正式导出.mp4").exists()
+        attempts[-1].write_bytes(b"encoded-video")
+        return len(list(frames))
+
+    runner = ImageSequenceVideoRunner(
+        [("正式导出", pages, [template])],
+        str(output), hold_seconds=0.2, turn_seconds=0.1, fps=10,
+        realism_enabled=False,
+    )
+    with (
+        mock.patch.object(module, "select_encoder", return_value=("libx264", {}, {})),
+        mock.patch.object(module.ImageSequenceVideoRunner, "_encode_video_attempt", new=fake_attempt),
+    ):
+        result = run_runner(runner)
+    final_path = Path(runner.output_paths[0])
+    assert result["success"], result["message"]
+    assert final_path.read_bytes() == b"encoded-video"
+    assert not attempts[0].exists(), "成功 attempt 应原子移动为正式目标"
+
+
+def test_preview_publish_race_preserves_external_content_and_attempt():
+    import core.page_video_runner as module
+
+    folder = ROOT / "reserved-output-conflict"
+    pages = make_pages(folder, colors=((200, 10, 10),))
+    template = make_template(folder)
+    output = folder / "output"
+    output.mkdir()
+    preview_path = output / "preview.mp4"
+    attempt = None
+
+    def fake_attempt(self, *, attempt_path, frames, **_kwargs):
+        nonlocal attempt
+        attempt = Path(attempt_path)
+        attempt.write_bytes(b"encoded-attempt")
+        preview_path.write_bytes(b"external-content")
+        return len(list(frames))
+
+    runner = ImageSequenceVideoRunner(
+        [("预览竞争", pages, [template])],
+        str(output), hold_seconds=0.2, turn_seconds=0.1, fps=10,
+        realism_enabled=False, output_path=str(preview_path),
+    )
+    with (
+        mock.patch.object(module, "select_encoder", return_value=("libx264", {}, {})),
+        mock.patch.object(module.ImageSequenceVideoRunner, "_encode_video_attempt", new=fake_attempt),
+    ):
+        result = run_runner(runner)
+    assert not result["success"] and "页面翻页视频失败" in result["message"]
+    assert preview_path.read_bytes() == b"external-content"
+    assert attempt.read_bytes() == b"encoded-attempt"
+    assert runner.output_paths == []
+
+
+def test_explicit_preview_output_still_rejects_existing_target():
+    folder = ROOT / "preview-existing-output"
+    pages = make_pages(folder, colors=((200, 10, 10),))
+    template = make_template(folder)
+    output = folder / "output"
+    output.mkdir()
+    preview_path = output / "preview.mp4"
+    preview_path.write_bytes(b"existing-preview")
+    runner = ImageSequenceVideoRunner(
+        [("预览冲突", pages, [template])],
+        str(output), hold_seconds=0.2, turn_seconds=0.1, fps=10,
+        realism_enabled=False, output_path=str(preview_path),
+    )
+    result = run_runner(runner)
+    assert not result["success"] and "预览文件已存在" in result["message"]
+    assert preview_path.read_bytes() == b"existing-preview"
+
+
 def test_offscreen_ui_routing():
     import core.batch_runner as batch_runner_module
     import core.page_video_runner as page_runner_module
@@ -683,6 +767,9 @@ def run_tests():
     test_core_image_one_batch_per_pair_and_encoder_selection()
     test_helper_timeout_falls_back_to_cpu()
     test_videotoolbox_actual_failure_retries_libx264_without_overwrite()
+    test_formal_output_publishes_attempt_without_final_placeholder()
+    test_preview_publish_race_preserves_external_content_and_attempt()
+    test_explicit_preview_output_still_rejects_existing_target()
     test_offscreen_ui_routing()
     test_offscreen_preview_ui_contract()
     (ROOT / "summary.txt").write_text(
