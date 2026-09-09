@@ -21,6 +21,7 @@ from core.office_staging import (
     OfficeStagingRun,
     cleanup_powerpoint_staging_run,
     create_powerpoint_staging_run,
+    refresh_powerpoint_staging_run,
 )
 from core.output_paths import allocate_unique_directory
 
@@ -188,9 +189,9 @@ def _export_pdf_mac(source: Path, pdf_path: Path, backend: Backend) -> None:
     if backend == BACKEND_PPT_MAC:
         application = "/Applications/Microsoft PowerPoint.app"
         command = (
-            f"open POSIX file {source_literal}\n"
-            f"save active presentation in POSIX file {pdf_literal} as save as PDF\n"
-            "close active presentation saving no"
+            f"set openedDeck to open POSIX file {source_literal}\n"
+            f"save openedDeck in POSIX file {pdf_literal} as save as PDF\n"
+            "close openedDeck saving no"
         )
     elif backend == BACKEND_WORD_MAC:
         application = "/Applications/Microsoft Word.app"
@@ -311,7 +312,6 @@ def convert_document(
     backends: Sequence[Backend],
     *,
     log: Callable[[str], None] | None = None,
-    office_staging_root: str | os.PathLike[str] | None = None,
 ) -> tuple[int, Backend]:
     """用后端回退链将一个资料文件转换为 PNG 页面。"""
     mode = _require_document_type(document_type)
@@ -328,18 +328,22 @@ def convert_document(
             continue
         try:
             if backend == BACKEND_PPT_MAC:
-                staging = create_powerpoint_staging_run(
-                    source, root=office_staging_root
-                )
+                staging = create_powerpoint_staging_run(source)
                 try:
                     _export_pdf_mac(staging.source_copy, staging.pdf_path, backend)
+                    refresh_powerpoint_staging_run(staging)
                     pages = _pdf_to_png(staging.pdf_path, destination, max_pages)
                     if pages < 1:
                         raise RuntimeError("PDF 没有可导出的页面")
                     return pages, backend
                 finally:
+                    try:
+                        refresh_powerpoint_staging_run(staging)
+                    except Exception as exc:
+                        if log:
+                            log(f"PowerPoint 中转副本身份记录失败，已保留并报告：{exc}")
                     cleanup_result = cleanup_powerpoint_staging_run(
-                        staging.root, staging.run_id
+                        staging.run_id
                     )
                     if cleanup_result["errors"] and log:
                         log("PowerPoint 中转副本未能完整清理，启动时将再次检查")

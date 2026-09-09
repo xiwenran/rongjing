@@ -1,3 +1,4 @@
+import inspect
 import io
 import json
 import tempfile
@@ -46,6 +47,7 @@ class DocumentExportServiceTest(unittest.TestCase):
         with mock.patch.object(exporter, "is_valid_input_file", return_value=True), \
              mock.patch.object(exporter, "create_powerpoint_staging_run", return_value=run) as create, \
              mock.patch.object(exporter, "_export_pdf_mac") as export_pdf, \
+             mock.patch.object(exporter, "refresh_powerpoint_staging_run") as refresh, \
              mock.patch.object(exporter, "_pdf_to_png", return_value=3), \
              mock.patch.object(exporter, "cleanup_powerpoint_staging_run") as cleanup:
             pages, backend = exporter.convert_document(
@@ -54,15 +56,15 @@ class DocumentExportServiceTest(unittest.TestCase):
                 "ppt",
                 8,
                 [exporter.BACKEND_PPT_MAC],
-                office_staging_root=root,
             )
 
         self.assertEqual((pages, backend), (3, exporter.BACKEND_PPT_MAC))
-        create.assert_called_once_with(Path("/inputs/lesson.pptx"), root=root)
+        create.assert_called_once_with(Path("/inputs/lesson.pptx"))
         export_pdf.assert_called_once_with(
             run.source_copy, run.pdf_path, exporter.BACKEND_PPT_MAC
         )
-        cleanup.assert_called_once_with(root, run.run_id)
+        self.assertGreaterEqual(refresh.call_count, 1)
+        cleanup.assert_called_once_with(run.run_id)
 
     def test_ppt_mac_cleanup_runs_when_export_fails(self):
         root = Path("/fixed/融景Office中转")
@@ -76,6 +78,7 @@ class DocumentExportServiceTest(unittest.TestCase):
         with mock.patch.object(exporter, "is_valid_input_file", return_value=True), \
              mock.patch.object(exporter, "create_powerpoint_staging_run", return_value=run), \
              mock.patch.object(exporter, "_export_pdf_mac", side_effect=RuntimeError("mock fail")), \
+             mock.patch.object(exporter, "refresh_powerpoint_staging_run"), \
              mock.patch.object(exporter, "cleanup_powerpoint_staging_run") as cleanup:
             with self.assertRaisesRegex(RuntimeError, "所有转换后端均失败"):
                 exporter.convert_document(
@@ -84,10 +87,9 @@ class DocumentExportServiceTest(unittest.TestCase):
                     "ppt",
                     8,
                     [exporter.BACKEND_PPT_MAC],
-                    office_staging_root=root,
                 )
 
-        cleanup.assert_called_once_with(root, run.run_id)
+        cleanup.assert_called_once_with(run.run_id)
 
     def test_libreoffice_still_uses_temporary_directory(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -196,7 +198,13 @@ class DocumentExportServiceTest(unittest.TestCase):
 
         script = run.call_args.args[0][2]
         self.assertIn('tell application "/Applications/Microsoft PowerPoint.app"', script)
-        self.assertIn("save active presentation", script)
+        self.assertIn("set openedDeck to open", script)
+        self.assertIn("save openedDeck", script)
+        self.assertIn("close openedDeck", script)
+        self.assertNotIn("active presentation", script)
+
+    def test_convert_document_signature_has_no_staging_root_override(self):
+        self.assertNotIn("office_staging_root", inspect.signature(exporter.convert_document).parameters)
 
     def test_libreoffice_uses_separate_profile_and_expected_pdf_name(self):
         completed = mock.Mock(returncode=0, stdout="converted", stderr="")
