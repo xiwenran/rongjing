@@ -34,6 +34,85 @@ class DocumentInputRoutingTest(unittest.TestCase):
 
 
 class DocumentExportServiceTest(unittest.TestCase):
+    def test_ppt_mac_uses_same_staging_root_and_always_cleans_up(self):
+        root = Path("/fixed/融景Office中转")
+        run = exporter.OfficeStagingRun(
+            root=root,
+            run_id="d" * 32,
+            source_copy=root / "rongjing-office-copy.pptx",
+            pdf_path=root / "rongjing-office-output.pdf",
+            manifest_path=root / "rongjing-office.manifest.json",
+        )
+        with mock.patch.object(exporter, "is_valid_input_file", return_value=True), \
+             mock.patch.object(exporter, "create_powerpoint_staging_run", return_value=run) as create, \
+             mock.patch.object(exporter, "_export_pdf_mac") as export_pdf, \
+             mock.patch.object(exporter, "_pdf_to_png", return_value=3), \
+             mock.patch.object(exporter, "cleanup_powerpoint_staging_run") as cleanup:
+            pages, backend = exporter.convert_document(
+                "/inputs/lesson.pptx",
+                "/output",
+                "ppt",
+                8,
+                [exporter.BACKEND_PPT_MAC],
+                office_staging_root=root,
+            )
+
+        self.assertEqual((pages, backend), (3, exporter.BACKEND_PPT_MAC))
+        create.assert_called_once_with(Path("/inputs/lesson.pptx"), root=root)
+        export_pdf.assert_called_once_with(
+            run.source_copy, run.pdf_path, exporter.BACKEND_PPT_MAC
+        )
+        cleanup.assert_called_once_with(root, run.run_id)
+
+    def test_ppt_mac_cleanup_runs_when_export_fails(self):
+        root = Path("/fixed/融景Office中转")
+        run = exporter.OfficeStagingRun(
+            root=root,
+            run_id="e" * 32,
+            source_copy=root / "copy.pptx",
+            pdf_path=root / "copy.pdf",
+            manifest_path=root / "copy.manifest.json",
+        )
+        with mock.patch.object(exporter, "is_valid_input_file", return_value=True), \
+             mock.patch.object(exporter, "create_powerpoint_staging_run", return_value=run), \
+             mock.patch.object(exporter, "_export_pdf_mac", side_effect=RuntimeError("mock fail")), \
+             mock.patch.object(exporter, "cleanup_powerpoint_staging_run") as cleanup:
+            with self.assertRaisesRegex(RuntimeError, "所有转换后端均失败"):
+                exporter.convert_document(
+                    "/inputs/lesson.pptx",
+                    "/output",
+                    "ppt",
+                    8,
+                    [exporter.BACKEND_PPT_MAC],
+                    office_staging_root=root,
+                )
+
+        cleanup.assert_called_once_with(root, run.run_id)
+
+    def test_libreoffice_still_uses_temporary_directory(self):
+        with tempfile.TemporaryDirectory() as folder:
+            temp_pdf_dir = Path(folder) / "lo-temp"
+            temp_pdf_dir.mkdir()
+            pdf_path = temp_pdf_dir / "lesson.pdf"
+            with mock.patch.object(exporter, "is_valid_input_file", return_value=True), \
+                 mock.patch.object(exporter.tempfile, "TemporaryDirectory") as temporary, \
+                 mock.patch.object(exporter, "_export_pdf_libreoffice", return_value=pdf_path) as export_pdf, \
+                 mock.patch.object(exporter, "_pdf_to_png", return_value=1), \
+                 mock.patch.object(exporter, "create_powerpoint_staging_run") as create:
+                temporary.return_value.__enter__.return_value = str(temp_pdf_dir)
+                pages, backend = exporter.convert_document(
+                    "/inputs/lesson.pptx",
+                    "/output",
+                    "ppt",
+                    8,
+                    [exporter.BACKEND_LIBREOFFICE],
+                )
+
+        self.assertEqual((pages, backend), (1, exporter.BACKEND_LIBREOFFICE))
+        temporary.assert_called_once_with(prefix="rongjing_document_")
+        export_pdf.assert_called_once_with(Path("/inputs/lesson.pptx"), temp_pdf_dir)
+        create.assert_not_called()
+
     def test_summary_failure_and_atomic_allocator_only_cover_current_run(self):
         sources = [Path("/inputs/lesson1.pptx"), Path("/inputs/lesson2.ppt")]
         allocated = [Path("/output/lesson1"), Path("/output/lesson2")]

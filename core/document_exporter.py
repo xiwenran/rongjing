@@ -17,6 +17,11 @@ from pathlib import Path
 from typing import Callable, Literal, Sequence
 
 from core.file_policy import is_valid_input_file, scan_input_files
+from core.office_staging import (
+    OfficeStagingRun,
+    cleanup_powerpoint_staging_run,
+    create_powerpoint_staging_run,
+)
 from core.output_paths import allocate_unique_directory
 
 
@@ -306,6 +311,7 @@ def convert_document(
     backends: Sequence[Backend],
     *,
     log: Callable[[str], None] | None = None,
+    office_staging_root: str | os.PathLike[str] | None = None,
 ) -> tuple[int, Backend]:
     """用后端回退链将一个资料文件转换为 PNG 页面。"""
     mode = _require_document_type(document_type)
@@ -321,10 +327,27 @@ def convert_document(
         if backend not in _BACKENDS_BY_TYPE[mode]:
             continue
         try:
+            if backend == BACKEND_PPT_MAC:
+                staging = create_powerpoint_staging_run(
+                    source, root=office_staging_root
+                )
+                try:
+                    _export_pdf_mac(staging.source_copy, staging.pdf_path, backend)
+                    pages = _pdf_to_png(staging.pdf_path, destination, max_pages)
+                    if pages < 1:
+                        raise RuntimeError("PDF 没有可导出的页面")
+                    return pages, backend
+                finally:
+                    cleanup_result = cleanup_powerpoint_staging_run(
+                        staging.root, staging.run_id
+                    )
+                    if cleanup_result["errors"] and log:
+                        log("PowerPoint 中转副本未能完整清理，启动时将再次检查")
+
             with tempfile.TemporaryDirectory(prefix="rongjing_document_") as temp_name:
                 pdf_dir = Path(temp_name)
                 pdf_path = pdf_dir / "output.pdf"
-                if backend in (BACKEND_PPT_MAC, BACKEND_WORD_MAC):
+                if backend == BACKEND_WORD_MAC:
                     _export_pdf_mac(source, pdf_path, backend)
                 elif backend in (BACKEND_PPT_COM, BACKEND_WORD_COM):
                     _export_pdf_com(source, pdf_path, backend)

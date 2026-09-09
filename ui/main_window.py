@@ -35,6 +35,7 @@ from core.page_preview_cache import (
     cleanup_expired_preview_cache,
     preview_cache_root,
 )
+from core.office_staging import cleanup_expired_powerpoint_staging
 from ui.page_video_preview_dialog import PageVideoPreviewDialog
 from core.ai_background import normalize_base_url
 from core.screen_detector import detect_screen_points, detect_green_screen_points
@@ -632,6 +633,7 @@ class MainWindow(QMainWindow):
         self._preview_cache_cleanup_stats = cleanup_expired_preview_cache(
             self._preview_cache_root
         )
+        self._office_staging_cleanup_stats = cleanup_expired_powerpoint_staging()
         self._video_input_kind = None
         self._last_preview_image = self._settings.value("last_preview_image", "")
         self._batch_output_width = int(self._settings.value("batch_output_width", 1920))

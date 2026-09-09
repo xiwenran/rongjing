@@ -9,10 +9,10 @@
 ## 当前主线状态
 
 - PowerPoint 固定授权中转与副本清理 🚧
-  - 当前阶段：S1（固定中转根、复制输入、生成 manifest）；S2 计划完成成功后清理、超过 24 小时异常副本清理和最小验证。
-  - 一句话现状：同批多 PPT 改用固定中转根，避免每个文件因随机输出目录反复触发授权；原件不移动、不删除，首次固定根授权的持久性由用户真机验证。
+  - 当前阶段：S1/S2 代码与最小 mock 验证已完成，等待独立安全审查；专项保持施工中。
+  - 一句话现状：PowerPoint/macOS 已改用固定平铺中转根，并按 run manifest 精确清理副本；原件不移动、不删除，授权持久性仍待用户真机验证。
   - 阻塞：无。
-  - 最近验证：用户截图与只读代码确认，每次后端尝试都会新建 `TemporaryDirectory`。
+  - 最近验证：`python3 -m unittest _test_office_staging.py _test_document_exporter.py` 21 项通过；覆盖复制/manifest、dir_fd no-follow 精确清理、严格超过 24 小时、symlink/目录/越界名/根替换拒绝、`ppt_mac` 同根与 finally 清理、LibreOffice 仍用 `TemporaryDirectory`；`py_compile` 与 `git diff --check` 通过。未跑 PowerPoint、GUI、打包或全量测试，待独立审查。
   - commit hash：待完成后补。
 
 ## 待确认区（等用户裁决：还在做 / 已关闭 / 废弃归档）
