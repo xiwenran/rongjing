@@ -146,16 +146,16 @@ def _write_manifest_atomic(root_fd: int, manifest_name: str, payload: dict[str, 
             os.close(file_fd)
 
 
-def _stream_sha256(path: Path) -> tuple[str, int]:
+def _stream_sha256_fd(file_fd: int) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
-    with path.open("rb") as stream:
-        while True:
-            chunk = stream.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-            size += len(chunk)
+    os.lseek(file_fd, 0, os.SEEK_SET)
+    while True:
+        chunk = os.read(file_fd, 1024 * 1024)
+        if not chunk:
+            break
+        digest.update(chunk)
+        size += len(chunk)
     return digest.hexdigest(), size
 
 
@@ -169,66 +169,84 @@ def create_powerpoint_staging_run(
     """复制 PowerPoint 原件到唯一固定根，并记录副本身份。"""
     source = Path(source_file).expanduser()
     try:
-        source_stat = source.stat(follow_symlinks=False)
+        source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
     except OSError as exc:
         raise FileNotFoundError(f"PowerPoint 原件不可读：{source.name}") from exc
-    if not stat.S_ISREG(source_stat.st_mode):
-        raise ValueError("PowerPoint 原件必须是普通文件")
-
-    staging_root = _validated_root(default_office_staging_root())
-    current_run_id = _require_run_id(run_id) if run_id is not None else secrets.token_hex(16)
-    stem = _safe_stem(source)
-    source_name = _run_file_name(current_run_id, sequence, stem, source.suffix.lower())
-    pdf_name = _run_file_name(current_run_id, sequence, stem, ".pdf")
-    manifest_name = _manifest_name(current_run_id)
-    run = OfficeStagingRun(
-        root=staging_root,
-        run_id=current_run_id,
-        source_copy=staging_root / source_name,
-        pdf_path=staging_root / pdf_name,
-        manifest_path=staging_root / manifest_name,
-    )
-
-    root_fd = _open_root(staging_root, create=True)
     try:
-        destination_fd = os.open(source_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=root_fd)
+        source_stat = os.fstat(source_fd)
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise ValueError("PowerPoint 原件必须是普通文件")
+
+        staging_root = _validated_root(default_office_staging_root())
+        current_run_id = _require_run_id(run_id) if run_id is not None else secrets.token_hex(16)
+        stem = _safe_stem(source)
+        source_name = _run_file_name(current_run_id, sequence, stem, source.suffix.lower())
+        pdf_name = _run_file_name(current_run_id, sequence, stem, ".pdf")
+        manifest_name = _manifest_name(current_run_id)
+        run = OfficeStagingRun(
+            root=staging_root,
+            run_id=current_run_id,
+            source_copy=staging_root / source_name,
+            pdf_path=staging_root / pdf_name,
+            manifest_path=staging_root / manifest_name,
+        )
+
+        root_fd = _open_root(staging_root, create=True)
         try:
-            with source.open("rb") as source_stream:
+            destination_fd = os.open(source_name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=root_fd)
+            try:
+                source_digest = hashlib.sha256()
+                source_size = 0
                 while True:
-                    chunk = source_stream.read(1024 * 1024)
+                    chunk = os.read(source_fd, 1024 * 1024)
                     if not chunk:
                         break
+                    source_digest.update(chunk)
+                    source_size += len(chunk)
                     offset = 0
                     while offset < len(chunk):
                         offset += os.write(destination_fd, chunk[offset:])
-            os.fsync(destination_fd)
-        finally:
-            os.close(destination_fd)
+                os.fsync(destination_fd)
+                copied_stat = os.fstat(destination_fd)
+                copied_hash, copied_size = _stream_sha256_fd(destination_fd)
+            finally:
+                os.close(destination_fd)
 
-        copied_stat = _lstat(source_name, root_fd)
-        payload: dict[str, object] = {
-            "version": _MANIFEST_VERSION,
-            "run_id": current_run_id,
-            "created_files": [_file_record(source_name, copied_stat)],
-            "source_display": {"name": source.name},
-            "expected_pdf_name": pdf_name,
-        }
-        _write_manifest_atomic(root_fd, manifest_name, payload)
-        source_hash, source_size = _stream_sha256(source)
-        copied_hash, copied_size = _stream_sha256(run.source_copy)
-        if source_size != copied_size or source_hash != copied_hash:
-            raise RuntimeError("PowerPoint 中转副本 SHA-256 校验失败")
-        if not _root_matches_fd(staging_root, root_fd):
-            raise RuntimeError("Office 中转根目录已被替换，已拒绝使用副本")
-    except Exception:
-        os.close(root_fd)
-        root_fd = -1
-        cleanup_powerpoint_staging_run(current_run_id)
-        raise
-    finally:
-        if root_fd >= 0:
+            final_source_stat = os.fstat(source_fd)
+            source_unchanged = (
+                final_source_stat.st_dev == source_stat.st_dev
+                and final_source_stat.st_ino == source_stat.st_ino
+                and final_source_stat.st_size == source_stat.st_size
+                and final_source_stat.st_mtime_ns == source_stat.st_mtime_ns
+            )
+            payload: dict[str, object] = {
+                "version": _MANIFEST_VERSION,
+                "run_id": current_run_id,
+                "created_files": [_file_record(source_name, copied_stat)],
+                "source_display": {"name": source.name},
+                "expected_pdf_name": pdf_name,
+            }
+            _write_manifest_atomic(root_fd, manifest_name, payload)
+            if (
+                not source_unchanged
+                or source_size != source_stat.st_size
+                or source_size != copied_size
+                or source_digest.hexdigest() != copied_hash
+            ):
+                raise RuntimeError("PowerPoint 中转源文件快照或副本 SHA-256 校验失败")
+            if not _root_matches_fd(staging_root, root_fd):
+                raise RuntimeError("Office 中转根目录已被替换，已拒绝使用副本")
+        except Exception:
             os.close(root_fd)
-    return run
+            root_fd = -1
+            cleanup_powerpoint_staging_run(current_run_id)
+            raise
+        finally:
+            if root_fd >= 0:
+                os.close(root_fd)
+        return run
+    finally:
+        os.close(source_fd)
 
 
 def _read_manifest_fd(root_fd: int, manifest_name: str) -> tuple[dict[str, object], os.stat_result]:
@@ -311,11 +329,16 @@ def refresh_powerpoint_staging_run(run: OfficeStagingRun) -> None:
 
 
 def _same_identity(item_stat: os.stat_result, record: dict[str, int | str]) -> bool:
-    return stat.S_ISREG(item_stat.st_mode) and item_stat.st_dev == record["dev"] and item_stat.st_ino == record["ino"]
+    return (
+        stat.S_ISREG(item_stat.st_mode)
+        and item_stat.st_dev == record["dev"]
+        and item_stat.st_ino == record["ino"]
+        and item_stat.st_size == record["size"]
+    )
 
 
-def _quarantine_and_unlink(root_fd: int, name: str, expected_dev: int, expected_ino: int) -> None:
-    expected: dict[str, int | str] = {"dev": expected_dev, "ino": expected_ino}
+def _quarantine_and_unlink(root_fd: int, name: str, expected_dev: int, expected_ino: int, expected_size: int) -> None:
+    expected: dict[str, int | str] = {"dev": expected_dev, "ino": expected_ino, "size": expected_size}
     before = _lstat(name, root_fd)
     if not _same_identity(before, expected):
         raise RuntimeError(f"文件身份不匹配，已保留：{name}")
@@ -341,11 +364,11 @@ def _cleanup_manifest_fd(root: Path, root_fd: int, manifest_name: str, run_id: s
             except FileNotFoundError:
                 result["missing_files"] += 1
                 continue
-            _quarantine_and_unlink(root_fd, name, int(record["dev"]), int(record["ino"]))
+            _quarantine_and_unlink(root_fd, name, int(record["dev"]), int(record["ino"]), int(record["size"]))
             result["removed_files"] += 1
         if not _root_matches_fd(root, root_fd):
             raise RuntimeError("Office 中转根目录已被替换，已拒绝清理 manifest")
-        _quarantine_and_unlink(root_fd, manifest_name, manifest_stat.st_dev, manifest_stat.st_ino)
+        _quarantine_and_unlink(root_fd, manifest_name, manifest_stat.st_dev, manifest_stat.st_ino, manifest_stat.st_size)
         result["removed_manifest"] = True
     except (OSError, TypeError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         result["errors"].append(str(exc))
