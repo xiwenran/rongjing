@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import math
 import os
+import sys
+import tempfile
+import time
+import uuid
 from fractions import Fraction
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -12,9 +16,14 @@ from PIL import Image, ImageDraw, UnidentifiedImageError
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.file_policy import is_valid_input_file, natural_sort_key, scan_input_files
+from core.core_image_page_curl import PageCurlRenderError, PageCurlUnavailable, availability, render_batch
 from core.image_processor import embed_image_pil, embed_image_pil_fast, precompute_template_cache
 from core.output_paths import allocate_unique_directory, allocate_unique_file
 from core.realism_filter import apply_realism, precompute_realism
+
+
+MAX_CURVE_FRAMES = 8
+PROGRESS_INTERVAL_SECONDS = 0.15
 
 
 def classify_media_paths(paths: Sequence[str]) -> str:
@@ -79,7 +88,11 @@ def render_page_turn(current: Image.Image, following: Image.Image, progress: flo
     """Render a right-to-left planar page turn with a moving-edge/spine shadow."""
     progress = min(1.0, max(0.0, float(progress)))
     current = current.convert("RGB")
-    following = fit_page(following, current.size)
+    following = (
+        following.convert("RGB")
+        if following.size == current.size
+        else fit_page(following, current.size)
+    )
     if progress <= 0.0:
         return current.copy()
     if progress >= 1.0:
@@ -106,6 +119,63 @@ def render_page_turn(current: Image.Image, following: Image.Image, progress: flo
         alpha = round(35 * strength * (1.0 - x / spine_band))
         draw.line((x, 0, x, height), fill=(0, 0, 0, alpha))
     return Image.alpha_composite(frame.convert("RGBA"), overlay).convert("RGB")
+
+
+def transition_progresses(turn_frames: int, max_curve_frames: int = MAX_CURVE_FRAMES) -> list[float]:
+    """Return the independently rendered transition times, capped for performance."""
+    count = min(max(1, int(turn_frames)), max(1, int(max_curve_frames)))
+    return [(index + 1) / count for index in range(count)]
+
+
+def transition_frame_indices(turn_frames: int, rendered_count: int) -> list[int]:
+    """Map the full output timeline onto a bounded set of rendered curve frames."""
+    if turn_frames <= 0 or rendered_count <= 0:
+        return []
+    return [
+        min(rendered_count - 1, math.ceil((index + 1) * rendered_count / turn_frames) - 1)
+        for index in range(turn_frames)
+    ]
+
+
+def _probe_videotoolbox(width: int, height: int) -> bool:
+    """Open the real encoder at the target size; registration alone is insufficient."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        import av
+
+        context = av.codec.CodecContext.create("h264_videotoolbox", "w")
+        context.width = int(width)
+        context.height = int(height)
+        context.pix_fmt = "yuv420p"
+        context.open()
+        return True
+    except Exception:
+        return False
+
+
+def select_encoder(width: int, height: int, fps: int) -> tuple[str, dict, dict]:
+    """Use VideoToolbox when it really opens, otherwise explicitly select libx264."""
+    if _probe_videotoolbox(width, height):
+        bit_rate = min(int(width * height * fps * 0.07), 20_000_000)
+        return "h264_videotoolbox", {}, {"bit_rate": bit_rate}
+    return "libx264", {"crf": "18", "preset": "veryfast"}, {}
+
+
+def allocate_page_curl_work_dir() -> Path:
+    """Allocate a unique cache item covered by the existing cache-cleanup UI."""
+    cache_root = Path(
+        os.environ.get("RONGJING_PAGE_CURL_CACHE_DIR", "~/.rongjing/ai_cache")
+    ).expanduser()
+    work_dir = cache_root / f"page_curl-{uuid.uuid4().hex}"
+    try:
+        work_dir.mkdir(parents=True, exist_ok=False)
+        return work_dir
+    except OSError:
+        # Sandboxed/test environments may deny the app cache root. The OS temp
+        # root still gives this run a collision-free workspace without touching
+        # user-selected output files.
+        return Path(tempfile.mkdtemp(prefix="rongjing-page-curl-"))
 
 
 def iter_page_frames(
@@ -161,9 +231,19 @@ class ImageSequenceVideoRunner(QThread):
         self.realism_strength = realism_strength
         self._abort = False
         self.output_paths: list[str] = []
+        self.work_dirs: list[str] = []
+        self.actual_backends: list[str] = []
+        self.actual_encoders: list[str] = []
+        self._last_progress_at = 0.0
 
     def abort(self):
         self._abort = True
+
+    def _emit_progress(self, done: int, total: int, message: str, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if force or done >= total or now - self._last_progress_at >= PROGRESS_INTERVAL_SECONDS:
+            self.progress.emit(done, total, message)
+            self._last_progress_at = now
 
     @staticmethod
     def _load_pages(paths: Sequence[str]) -> tuple[list[Image.Image], list[str]]:
@@ -178,6 +258,155 @@ class ImageSequenceVideoRunner(QThread):
                 skipped.append(path)
         return pages, skipped
 
+    def _prepare_transitions(
+        self,
+        pages: Sequence[Image.Image],
+        turn_frames: int,
+        source_name: str,
+    ) -> tuple[list[list[Image.Image]], str, str | None]:
+        """Render every adjacent pair once; never invoke Core Image for static holds."""
+        if len(pages) < 2 or turn_frames <= 0:
+            return [], "无转场（单页）", None
+
+        progresses = transition_progresses(turn_frames)
+        ci_available, unavailable_reason = availability()
+        if ci_available:
+            work_dir = allocate_page_curl_work_dir()
+            self.work_dirs.append(str(work_dir))
+            page_paths = []
+            for index, page in enumerate(pages):
+                page_path = work_dir / f"page_{index:04d}.png"
+                page.save(page_path, "PNG")
+                page_paths.append(page_path)
+            rendered_pairs: list[list[Image.Image]] = []
+            filter_names: set[str] = set()
+            try:
+                for pair_index in range(len(pages) - 1):
+                    if self._abort:
+                        return [], "Core Image（取消）", None
+                    pair_dir = work_dir / f"pair_{pair_index:04d}"
+                    result = render_batch(
+                        page_paths[pair_index],
+                        page_paths[pair_index + 1],
+                        pair_dir,
+                        progresses,
+                        pages[0].width,
+                        pages[0].height,
+                        manifest_path=pair_dir / "manifest.json",
+                    )
+                    filter_names.add(result["filter"])
+                    pair_frames = []
+                    for frame_info in result["frames"]:
+                        with Image.open(frame_info["path"]) as frame:
+                            frame.load()
+                            pair_frames.append(frame.convert("RGB"))
+                    rendered_pairs.append(pair_frames)
+                filter_name = ", ".join(sorted(filter_names))
+                return rendered_pairs, f"Core Image（{filter_name}）", None
+            except (PageCurlUnavailable, PageCurlRenderError, OSError, ValueError) as exc:
+                unavailable_reason = str(exc)
+
+        cpu_pairs = [
+            [render_page_turn(pages[index], pages[index + 1], progress) for progress in progresses]
+            for index in range(len(pages) - 1)
+        ]
+        return cpu_pairs, "CPU 平面翻页", unavailable_reason
+
+    def _encode_template_video(
+        self,
+        *,
+        source_name: str,
+        template,
+        source_output_dir: str,
+        pages: Sequence[Image.Image],
+        transitions: Sequence[Sequence[Image.Image]],
+        hold_frames: int,
+        turn_frames: int,
+        total: int,
+        done: int,
+    ) -> tuple[int, str, str]:
+        with Image.open(template.background_path) as opened_bg:
+            opened_bg.load()
+            source_size = opened_bg.size
+            target_size = even_size(source_size)
+            bg_img = opened_bg.convert("RGB").resize(target_size, Image.Resampling.BILINEAR)
+        scale_x = target_size[0] / source_size[0]
+        scale_y = target_size[1] / source_size[1]
+        points = [[x * scale_x, y * scale_y] for x, y in template.screen_points]
+        cache = precompute_template_cache(bg_img, points, ppt_size=pages[0].size)
+        realism_cache = precompute_realism(
+            bg_img,
+            points,
+            strength=self.realism_strength if self.realism_enabled else 0,
+        )
+
+        # Static pages deliberately keep one fixed realism-noise sample. Reusing the
+        # final composited frame avoids repeating perspective/filter work during holds.
+        static_frames = [
+            apply_realism(embed_image_pil_fast(page, cache), realism_cache, frame_index=index)
+            for index, page in enumerate(pages)
+        ]
+        transition_frames: list[list[Image.Image]] = []
+        for pair_index, pair in enumerate(transitions):
+            cached_pair = []
+            for sample_index, page in enumerate(pair):
+                if sample_index == len(pair) - 1:
+                    cached_pair.append(static_frames[pair_index + 1])
+                else:
+                    embedded = embed_image_pil_fast(page, cache)
+                    cached_pair.append(
+                        apply_realism(
+                            embedded,
+                            realism_cache,
+                            frame_index=len(pages) + pair_index * MAX_CURVE_FRAMES + sample_index,
+                        )
+                    )
+            transition_frames.append(cached_pair)
+
+        template_dir = Path(source_output_dir) / template.name
+        template_dir.mkdir(parents=True, exist_ok=True)
+        output_path = allocate_unique_file(template_dir, f"{Path(source_name).stem}.mp4")
+        codec_name, codec_options, codec_attrs = select_encoder(*target_size, self.fps)
+        time_base = Fraction(1, self.fps)
+        import av
+
+        with av.open(str(output_path), "w", format="mp4") as container:
+            stream = container.add_stream(codec_name, rate=self.fps)
+            stream.width, stream.height = target_size
+            stream.pix_fmt = "yuv420p"
+            stream.time_base = time_base
+            stream.codec_context.time_base = time_base
+            if codec_options:
+                stream.options = codec_options
+            if "bit_rate" in codec_attrs:
+                stream.codec_context.bit_rate = codec_attrs["bit_rate"]
+
+            frame_index = 0
+            mapping = transition_frame_indices(turn_frames, len(transitions[0])) if transitions else []
+            for page_index, static_frame in enumerate(static_frames):
+                sequence = [static_frame] * hold_frames
+                if page_index < len(transition_frames):
+                    sequence.extend(transition_frames[page_index][index] for index in mapping)
+                for output_frame in sequence:
+                    if self._abort:
+                        break
+                    frame = av.VideoFrame.from_image(output_frame)
+                    frame.pts = frame_index
+                    frame.time_base = time_base
+                    for packet in stream.encode(frame):
+                        container.mux(packet)
+                    frame_index += 1
+                    done += 1
+                    self._emit_progress(done, total, f"{source_name} → {template.name}")
+                if self._abort:
+                    break
+            if not self._abort:
+                for packet in stream.encode():
+                    container.mux(packet)
+
+        self.output_paths.append(str(output_path))
+        return done, codec_name, str(output_path)
+
     def run(self):
         try:
             import av
@@ -190,69 +419,57 @@ class ImageSequenceVideoRunner(QThread):
                 skipped_all.extend(skipped)
                 if not pages:
                     raise ValueError(f"「{source_name}」过滤或跳过坏图后没有有效页面图片")
-                _hold, _turn, count = frame_counts(
+                normalized_pages = [fit_page(page, pages[0].size) for page in pages]
+                hold, turn, count = frame_counts(
                     len(pages), self.hold_seconds, self.turn_seconds, self.fps
                 )
                 total += count * len(templates)
-                prepared.append((source_name, pages, templates, output_dir, count))
+                prepared.append(
+                    (source_name, normalized_pages, templates, output_dir, hold, turn, count)
+                )
 
             done = 0
-            time_base = Fraction(1, self.fps)
-            for source_name, pages, templates, source_output_dir, _count in prepared:
+            backend_notes = []
+            encoder_names = []
+            for source_name, pages, templates, source_output_dir, hold, turn, _count in prepared:
+                transitions, backend, fallback_reason = self._prepare_transitions(
+                    pages, turn, source_name
+                )
+                self.actual_backends.append(backend)
+                backend_note = f"{source_name}: {backend}"
+                if fallback_reason:
+                    backend_note += f"（回退原因：{fallback_reason}）"
+                backend_notes.append(backend_note)
                 for template in templates:
                     if self._abort:
                         self.finished.emit(False, "已取消；已生成的半成品保留在输出目录")
                         return
-                    with Image.open(template.background_path) as source_bg:
-                        source_bg = source_bg.convert("RGB")
-                        target_size = even_size(source_bg.size)
-                        bg_img = source_bg.resize(target_size, Image.Resampling.BILINEAR)
-                    scale_x = target_size[0] / source_bg.width
-                    scale_y = target_size[1] / source_bg.height
-                    points = [[x * scale_x, y * scale_y] for x, y in template.screen_points]
-                    cache = precompute_template_cache(bg_img, points, ppt_size=pages[0].size)
-                    realism_cache = precompute_realism(
-                        bg_img,
-                        points,
-                        strength=self.realism_strength if self.realism_enabled else 0,
+                    done, encoder, _path = self._encode_template_video(
+                        source_name=source_name,
+                        template=template,
+                        source_output_dir=source_output_dir,
+                        pages=pages,
+                        transitions=transitions,
+                        hold_frames=hold,
+                        turn_frames=turn,
+                        total=total,
+                        done=done,
                     )
-
-                    template_dir = Path(source_output_dir) / template.name
-                    template_dir.mkdir(parents=True, exist_ok=True)
-                    filename = f"{Path(source_name).stem}.mp4"
-                    output_path = allocate_unique_file(template_dir, filename)
-                    self.output_paths.append(str(output_path))
-
-                    with av.open(str(output_path), "w", format="mp4") as container:
-                        stream = container.add_stream("libx264", rate=self.fps)
-                        stream.width, stream.height = target_size
-                        stream.pix_fmt = "yuv420p"
-                        stream.time_base = time_base
-                        stream.codec_context.time_base = time_base
-                        stream.options = {"crf": "18", "preset": "veryfast"}
-                        for frame_index, page_frame in enumerate(
-                            iter_page_frames(pages, self.hold_seconds, self.turn_seconds, self.fps)
-                        ):
-                            if self._abort:
-                                break
-                            result = embed_image_pil_fast(page_frame, cache)
-                            result = apply_realism(result, realism_cache, frame_index=frame_index)
-                            frame = av.VideoFrame.from_image(result)
-                            frame.pts = frame_index
-                            frame.time_base = time_base
-                            for packet in stream.encode(frame):
-                                container.mux(packet)
-                            done += 1
-                            self.progress.emit(done, total, f"{source_name} → {template.name}")
-                        if not self._abort:
-                            for packet in stream.encode():
-                                container.mux(packet)
+                    self.actual_encoders.append(encoder)
+                    encoder_names.append(encoder)
                     if self._abort:
                         self.finished.emit(False, "已取消；已生成的半成品保留在输出目录")
                         return
 
             skipped_text = f"；跳过 {len(skipped_all)} 张坏图" if skipped_all else ""
             paths_text = "\n".join(self.output_paths)
-            self.finished.emit(True, f"页面翻页视频完成{skipped_text}。实际输出：\n{paths_text}")
+            self._emit_progress(done, total, "页面翻页视频完成", force=True)
+            backend_text = "；".join(backend_notes)
+            encoder_text = ", ".join(sorted(set(encoder_names))) or "无"
+            self.finished.emit(
+                True,
+                f"页面翻页视频完成{skipped_text}。backend={backend_text}；encoder={encoder_text}。"
+                f"实际输出：\n{paths_text}",
+            )
         except Exception as exc:
             self.finished.emit(False, f"页面翻页视频失败：{exc}；半成品已保留")
