@@ -94,13 +94,16 @@ def render_batch(
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    completed = subprocess.run(
-        [str(helper), str(manifest)],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            [str(helper), str(manifest)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PageCurlRenderError(f"Swift helper 渲染超时（{timeout:g} 秒）") from exc
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip() or "无错误详情"
         raise PageCurlRenderError(f"Swift helper 返回 {completed.returncode}：{detail}")

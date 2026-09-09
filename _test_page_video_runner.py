@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import uuid
 from pathlib import Path
 from unittest import mock
@@ -268,6 +269,67 @@ def test_core_image_one_batch_per_pair_and_encoder_selection():
     assert codec == "libx264" and options["crf"] == "18" and not attrs
 
 
+def test_helper_timeout_falls_back_to_cpu():
+    import core.page_video_runner as module
+    import core.core_image_page_curl as helper_module
+
+    pages = [Image.new("RGB", (80, 48), color) for color in ((200, 10, 10), (10, 10, 200))]
+    runner = ImageSequenceVideoRunner([], str(ROOT / "timeout-fallback-output"), fps=10)
+    with (
+        mock.patch.object(module, "availability", return_value=(True, "available")),
+        mock.patch.object(helper_module, "availability", return_value=(True, "available")),
+        mock.patch.object(
+            helper_module.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired("helper", 120),
+        ),
+    ):
+        pairs, backend, reason = runner._prepare_transitions(pages, 10, "超时样本")
+    assert pairs and backend == "CPU 平面翻页"
+    assert reason == "Swift helper 渲染超时（120 秒）"
+
+
+def test_videotoolbox_actual_failure_retries_libx264_without_overwrite():
+    import core.page_video_runner as module
+
+    folder = ROOT / "encoder-fallback"
+    pages = make_pages(folder, colors=((200, 10, 10),))
+    template = make_template(folder)
+    output = folder / "output"
+    output.mkdir()
+    final_path = output / "preview.mp4"
+    calls = []
+
+    def fake_attempt(self, *, attempt_path, codec_name, frames, **_kwargs):
+        calls.append((codec_name, Path(attempt_path), len(list(frames))))
+        Path(attempt_path).write_bytes(codec_name.encode("ascii"))
+        if codec_name == "h264_videotoolbox":
+            raise RuntimeError("actual add_stream failure")
+        return calls[-1][2]
+
+    runner = ImageSequenceVideoRunner(
+        [("编码回退", pages, [template])],
+        str(output), hold_seconds=0.2, turn_seconds=0.1, fps=10,
+        realism_enabled=False, output_path=str(final_path),
+    )
+    with (
+        mock.patch.object(
+            module,
+            "select_encoder",
+            return_value=("h264_videotoolbox", {}, {"bit_rate": 1_000_000}),
+        ),
+        mock.patch.object(module.ImageSequenceVideoRunner, "_encode_video_attempt", new=fake_attempt),
+    ):
+        result = run_runner(runner)
+    assert result["success"], result["message"]
+    assert runner.actual_encoders == ["libx264"]
+    assert "encoder=libx264" in result["message"]
+    assert final_path.read_bytes() == b"libx264"
+    assert calls[0][1] != calls[1][1] and calls[1][1] != final_path
+    assert calls[0][1].exists(), "VideoToolbox 失败半成品应保留"
+    assert calls[0][2] == calls[1][2] == 2, "回退必须重放完整帧计划"
+
+
 def test_offscreen_ui_routing():
     import core.batch_runner as batch_runner_module
     import core.page_video_runner as page_runner_module
@@ -365,6 +427,13 @@ def test_offscreen_preview_ui_contract():
     window._set_batch_mode(2)
     window._populate_video_table([str(corrupt), *pages])
     assert not window.btn_page_preview.isHidden()
+    window._set_batch_mode(1)
+    assert window.btn_page_preview.isHidden() and not window.btn_page_preview.isEnabled()
+    window._set_batch_running(True)
+    window._set_batch_mode(2)
+    assert not window.btn_page_preview.isHidden() and not window.btn_page_preview.isEnabled()
+    window._set_batch_running(False)
+    assert window.btn_page_preview.isEnabled()
 
     paper = make_template(folder / "paper")
     paper.name = "纸张模板"
@@ -455,6 +524,8 @@ def run_tests():
     test_real_encoding_and_pts()
     test_static_cache_and_cpu_fallback_call_counts()
     test_core_image_one_batch_per_pair_and_encoder_selection()
+    test_helper_timeout_falls_back_to_cpu()
+    test_videotoolbox_actual_failure_retries_libx264_without_overwrite()
     test_offscreen_ui_routing()
     test_offscreen_preview_ui_contract()
     (ROOT / "summary.txt").write_text(

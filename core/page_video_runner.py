@@ -387,11 +387,77 @@ class ImageSequenceVideoRunner(QThread):
             template_dir = Path(source_output_dir) / template.name
             template_dir.mkdir(parents=True, exist_ok=True)
             output_path = allocate_unique_file(template_dir, f"{Path(source_name).stem}.mp4")
-        codec_name, codec_options, codec_attrs = select_encoder(*target_size, self.fps)
         time_base = Fraction(1, self.fps)
+        mapping = transition_frame_indices(turn_frames, len(transitions[0])) if transitions else []
+
+        def frame_plan():
+            for page_index, static_frame in enumerate(static_frames):
+                for _ in range(hold_frames):
+                    yield static_frame
+                if page_index < len(transition_frames):
+                    for index in mapping:
+                        yield transition_frames[page_index][index]
+
+        selected = select_encoder(*target_size, self.fps)
+        attempts = [selected]
+        if selected[0] == "h264_videotoolbox":
+            attempts.append(("libx264", {"crf": "18", "preset": "veryfast"}, {}))
+
+        last_error = None
+        for codec_name, codec_options, codec_attrs in attempts:
+            attempt_path = allocate_unique_file(
+                output_path.parent,
+                f"{output_path.stem}.{codec_name}-attempt-{uuid.uuid4().hex[:8]}.mp4",
+            )
+            try:
+                encoded_count = self._encode_video_attempt(
+                    attempt_path=attempt_path,
+                    codec_name=codec_name,
+                    codec_options=codec_options,
+                    codec_attrs=codec_attrs,
+                    target_size=target_size,
+                    time_base=time_base,
+                    frames=frame_plan(),
+                    done=done,
+                    total=total,
+                    progress_message=f"{source_name} → {template.name}",
+                )
+            except Exception as exc:
+                last_error = exc
+                if codec_name == "h264_videotoolbox":
+                    continue
+                raise RuntimeError(f"libx264 回退编码失败：{exc}") from exc
+
+            if self._abort:
+                self.output_paths.append(str(attempt_path))
+                return done + encoded_count, codec_name, str(attempt_path)
+            if output_path.exists():
+                raise FileExistsError(f"输出文件已存在：{output_path.name}")
+            attempt_path.rename(output_path)
+            self.output_paths.append(str(output_path))
+            return done + encoded_count, codec_name, str(output_path)
+
+        raise RuntimeError(f"VideoToolbox 编码失败：{last_error}")
+
+    def _encode_video_attempt(
+        self,
+        *,
+        attempt_path: Path,
+        codec_name: str,
+        codec_options: dict,
+        codec_attrs: dict,
+        target_size: tuple[int, int],
+        time_base: Fraction,
+        frames: Iterable[Image.Image],
+        done: int,
+        total: int,
+        progress_message: str,
+    ) -> int:
+        """Encode one replayable frame-plan attempt; callers retain failed artifacts."""
         import av
 
-        with av.open(str(output_path), "w", format="mp4") as container:
+        encoded_count = 0
+        with av.open(str(attempt_path), "w", format="mp4") as container:
             stream = container.add_stream(codec_name, rate=self.fps)
             stream.width, stream.height = target_size
             stream.pix_fmt = "yuv420p"
@@ -402,31 +468,22 @@ class ImageSequenceVideoRunner(QThread):
             if "bit_rate" in codec_attrs:
                 stream.codec_context.bit_rate = codec_attrs["bit_rate"]
 
-            frame_index = 0
-            mapping = transition_frame_indices(turn_frames, len(transitions[0])) if transitions else []
-            for page_index, static_frame in enumerate(static_frames):
-                sequence = [static_frame] * hold_frames
-                if page_index < len(transition_frames):
-                    sequence.extend(transition_frames[page_index][index] for index in mapping)
-                for output_frame in sequence:
-                    if self._abort:
-                        break
-                    frame = av.VideoFrame.from_image(output_frame)
-                    frame.pts = frame_index
-                    frame.time_base = time_base
-                    for packet in stream.encode(frame):
-                        container.mux(packet)
-                    frame_index += 1
-                    done += 1
-                    self._emit_progress(done, total, f"{source_name} → {template.name}")
+            for output_frame in frames:
                 if self._abort:
                     break
+                frame = av.VideoFrame.from_image(output_frame)
+                frame.pts = encoded_count
+                frame.time_base = time_base
+                for packet in stream.encode(frame):
+                    container.mux(packet)
+                encoded_count += 1
+                self._emit_progress(
+                    done + encoded_count, total, progress_message
+                )
             if not self._abort:
                 for packet in stream.encode():
                     container.mux(packet)
-
-        self.output_paths.append(str(output_path))
-        return done, codec_name, str(output_path)
+        return encoded_count
 
     def run(self):
         try:

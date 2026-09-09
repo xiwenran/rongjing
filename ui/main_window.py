@@ -2048,6 +2048,7 @@ class MainWindow(QMainWindow):
         self._c_video_right.setVisible(idx == 2)
         self._format_row_widget.setVisible(idx != 2)  # no format selector for video
         self._batch_diversify.setVisible(idx != 2)
+        self._sync_page_preview_state()
         # Update hint to match current mode
         if idx == 0:
             self._c2_hint.setText("每行独立选择模板，或点「统一选模板」批量设置所有行。")
@@ -2351,14 +2352,14 @@ class MainWindow(QMainWindow):
         self.video_table.setRowCount(0)
         self._video_input_kind = input_kind
         self._page_video_settings_widget.setVisible(input_kind == "image")
-        self.btn_page_preview.setVisible(input_kind == "image")
+        self._sync_page_preview_state()
         if input_kind == "image":
             page_paths = normalize_page_paths(paths)
             if not page_paths:
                 QMessageBox.warning(self, "输入不支持", "过滤后没有有效页面图片")
                 self._video_input_kind = None
                 self._page_video_settings_widget.hide()
-                self.btn_page_preview.hide()
+                self._sync_page_preview_state()
                 return
             source_name = (
                 os.path.basename(os.path.normpath(paths[0]))
@@ -2404,11 +2405,16 @@ class MainWindow(QMainWindow):
         if self.video_table.rowCount():
             self.video_table.setCurrentCell(0, 0)
 
+    def _sync_page_preview_state(self):
+        visible = self._batch_mode == 2 and self._video_input_kind == "image"
+        self.btn_page_preview.setVisible(visible)
+        self.btn_page_preview.setEnabled(visible and not self._batch_running)
+
     def _set_batch_running(self, running: bool, *, preview: bool = False):
         self._batch_running = running
         self._preview_running = running and preview
         self.btn_run.setEnabled(not running)
-        self.btn_page_preview.setEnabled(not running)
+        self._sync_page_preview_state()
         self.btn_run.setVisible(not running or preview)
         self.btn_abort.setVisible(running)
         if running:
