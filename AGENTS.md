@@ -254,7 +254,7 @@ _RED   = "#FA5151"   # 危险色
 - [x] 图片、拼图、真实视频和资料导出统一使用不覆盖目录；根目录直接图片使用所选文件夹名
 - [x] 视频入口支持真实视频与页面序列分流，页面序列采用固定 FPS、递增 PTS 和流式 H.264 编码
 - [x] `material-exporter` 与 `ppt-notes-pipeline` 现役 Skill 归融景维护，旧 `ppt-batch-tool` 项目暂停维护
-- [x] 运行数据目录新增 6 个「笔记本室内」暗调倾斜场景模板，key 为 `20260909-laptop-indoor-dark-01` 至 `20260909-laptop-indoor-dark-06`
+- [x] 运行数据目录新增 6 个 AI 生成的「笔记本室内」暗调倾斜场景模板，key 为 `20260909-laptop-indoor-dark-01` 至 `20260909-laptop-indoor-dark-06`
 
 ---
 
@@ -305,7 +305,7 @@ _RED   = "#FA5151"   # 危险色
 43. **视频入口按输入分流**：真实视频继续使用 `VideoRunner`；图片或文件夹走页面序列，单图静态，多图为平面翻页与阴影转场，并使用固定 FPS、递增 PTS 和流式编码。
 44. **资料类型严格分流**：资料导出页和 `export-material` 的 PPT 模式只接收 PPT，Word 模式只接收 Word；过滤后的清单才进入转换任务。
 45. **验证边界**：已验证 LibreOffice 导出 PPT 1440×1080 1 页、Word 1224×1584 1 页且连续 2 次不覆盖；页面序列为 H.264、10 FPS、96×64、10 帧且 PTS 递增；offscreen GUI 与 41 项 Skill 链接检查通过。PowerPoint 原生后端、Windows COM、冻结包和 GUI 真机交互未验证。
-46. **运行数据模板补充**：直接补运行模板时，JSON 写入 `~/Library/Application Support/融景/templates/`，背景图写入同级 `backgrounds/`；仓库 commit 只记录事实和验证，不会把用户数据目录里的大图纳入 Git。
+46. **运行数据模板补充**：直接补运行模板时，JSON 写入 `~/Library/Application Support/融景/templates/`，背景图写入同级 `backgrounds/`；仓库 commit 只记录事实和验证，不会把用户数据目录里的大图纳入 Git。本次 6 个笔记本室内模板先生成过一版本地占位图，因偏插画感已覆盖为 AI 生成的真实照片感背景。
 
 ---
 
