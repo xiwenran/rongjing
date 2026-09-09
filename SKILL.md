@@ -19,6 +19,7 @@ description: 融景图片与资料处理：把图片嵌入实拍模板、生成�
 
 - PPT 与 Word 按 `--type` 严格分流，目录扫描只接收所选类型。
 - 输入扫描先过滤隐藏文件、AppleDouble `._*`、Office 临时文件 `~$*` 和非文件项，再排序、计数、选封面、生成 manifest 和组装任务清单。
+- macOS PowerPoint 只使用固定 `~/Documents/融景Office中转/`：复制原 PPT 后从同根打开并输出 PDF，原件不移动；成功或正常失败按 manifest 精确清理本批副本与 PDF，严格超过 24 小时的崩溃残留由启动清理处理。固定根使用 `0700`、no-follow、`dir_fd`、quarantine、inode + size 校验，副本另核对 SHA-256 + size；LibreOffice 流程保持不变。
 - 拼图、图片合成、真实视频和资料导出每次分配新来源目录；重名时使用 `_2`、`_3`，不覆盖或清理旧产物。
 - 跨分类同名模板使用 `list-templates` 返回的 `key`，避免选错模板。
 - 执行后报告实际输出目录、成功数量、失败项和未验证边界，不把 CLI 返回 0 或文件存在单独当作最终验收。
@@ -56,6 +57,8 @@ cd ~/rongjing && python3 cli.py export-material \
 ```
 
 `--max-pages` 默认 17，并兼容 `--max-slides`。省略 `--backend` 时按当前平台自动选择并回退。
+
+macOS 首次使用 PowerPoint 后端时，固定中转根预期只需授权一次，同一文件夹或多个文件夹共用该授权；授权持久性需在实际 Mac 和冻结 App 中确认。
 
 ### 新建模板
 

@@ -352,6 +352,9 @@ V2 没有直接进入开发，经过三轮审查：
 - [x] 新增独立「资料导出」页面和 CLI `export-material`
 - [x] PPT 与 Word 严格按所选类型扫描，不混收另一类资料
 - [x] 支持 `--max-pages`（兼容 `--max-slides`）及 `ppt_mac`、`ppt_com`、`word_mac`、`word_com`、`libreoffice` 后端
+- [x] macOS PowerPoint 固定使用 `~/Documents/融景Office中转/`，复制而不移动原 PPT；PowerPoint 从固定根打开并将 PDF 输出到同一目录，LibreOffice 流程不变
+- [x] 每批以 manifest 精确记录副本和 PDF，成功或正常失败时清理本批文件；崩溃残留严格超过 24 小时后由启动清理处理
+- [x] 固定根使用 `0700`、no-follow 与 `dir_fd`；副本核对 SHA-256 + size，清理经 quarantine 与 inode + size 身份复核
 
 ### 15.2 统一文件过滤与输出分配
 
@@ -379,7 +382,8 @@ V2 没有直接进入开发，经过三轮审查：
 - [x] 页面序列已验证 H.264、10 FPS、96×64、10 帧及 PTS 递增；offscreen GUI 与 41 项 Skill 链接检查通过
 - [x] P1 已验证 `CIPageCurlWithShadowTransition` 离屏首、中、尾 3 帧，目检可见曲面卷边、纸张背面、折痕与阴影
 - [x] P2 已验证正式页面视频实际使用 Core Image 与 VideoToolbox；样本为 H.264、10 FPS、640×360、10 帧且 PTS 递增，静态缓存与每组相邻页最多 8 张独立曲面帧生效
-- [ ] PowerPoint 原生后端、Windows COM、冻结包和 GUI 真机交互未验证；Mac 打包接线已完成静态检查，尚未实际生成冻结 App
+- [x] PowerPoint 固定授权中转经功能提交 `251d024`、安全加固 `115bdf6`、源文件快照修复 `3b31ad1` 和独立阻断项窄复核 CLOSED
+- [ ] macOS 固定根授权持久性、PowerPoint 真机运行、Windows COM、冻结包和 GUI 真机交互由用户验证；Mac 打包接线已完成静态检查，尚未实际生成冻结 App
 
 ---
 

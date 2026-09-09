@@ -185,6 +185,7 @@ _RED   = "#FA5151"   # 危险色
 
 ### 现行扩展入口
 - 独立「资料导出」页面与 CLI `export-material` 负责 PPT/Word 转 PNG，并严格按所选资料类型扫描
+- macOS PowerPoint 固定使用 `~/Documents/融景Office中转/`：复制原 PPT，不移动原件；PowerPoint 从固定根打开并将 PDF 输出到同根，成功或正常失败按 manifest 精确清理本批文件，崩溃残留严格超过 24 小时后由启动清理处理；LibreOffice 流程不变
 - 视频入口按输入分流：真实视频继续使用 `VideoRunner`；图片或文件夹生成页面序列视频，单图静态，多图在 Mac 上优先使用系统 Core Image 真实曲面卷页，非 Mac 或助手不可用时回退 CPU 平面翻页
 - 页面序列视频复用每页静态合成结果，每组相邻页最多生成 8 张独立曲面帧；Mac 优先使用 VideoToolbox，无法真正打开时回退 libx264
 - 翻页方向默认为从右向左，可选从左向右；正式导出与预览、CPU 与 Core Image 共用同一方向
@@ -255,6 +256,7 @@ _RED   = "#FA5151"   # 危险色
 - [x] 批量导出扫描跳过隐藏文件 / macOS `._` 元数据文件，运行时遇到无法识别的图片会跳过并继续处理
 - [x] Windows Actions 上传 Release 改为优先附加到最新 Release，避免旧 `RELEASE_TAG` 把新 Windows 包传回旧版本
 - [x] 新增独立资料导出页和 CLI `export-material`，PPT/Word 严格类型分流
+- [x] macOS PowerPoint 固定授权中转：固定根 `0700`，复制核对 SHA-256 + size，清理使用 no-follow、`dir_fd`、quarantine 和 inode + size；同一或多个来源文件夹预期首次只授权固定根一次，授权持久性由用户真机验证
 - [x] 图片、拼图、真实视频和资料导出统一使用不覆盖目录；根目录直接图片使用所选文件夹名
 - [x] 视频入口支持真实视频与页面序列分流，页面序列采用固定 FPS、递增 PTS 和流式 H.264 编码
 - [x] Mac 页面序列使用系统 `CIPageCurlWithShadowTransition` 生成真实曲面卷页；静态页按模板缓存，每组相邻页最多 8 张独立曲面帧；非 Mac 或助手不可用时回退 CPU 平面翻页
@@ -315,6 +317,7 @@ _RED   = "#FA5151"   # 危险色
 46. **运行数据模板补充**：直接补运行模板时，JSON 写入 `~/Library/Application Support/融景/templates/`，背景图写入同级 `backgrounds/`；仓库 commit 只记录事实和验证，不会把用户数据目录里的大图纳入 Git。本次 6 个笔记本室内模板先生成过一版本地占位图，因偏插画感已覆盖为 AI 生成的真实照片感背景。
 47. **Core Image 助手的源码与冻结路径**：源码运行从 `build/page_curl/PageCurlRenderer` 加载；PyInstaller 冻结环境从 `sys._MEIPASS/helpers/page_curl/PageCurlRenderer` 加载。Mac 打包必须先执行 `scripts/build_page_curl_helper.sh` 并以 `--add-binary` 打入固定相对目录，编译失败直接停止；Windows 不打包该助手，继续使用 CPU 回退。P1/P2 已验证源码路径的 Core Image 曲面帧、静态缓存、每组相邻页最多 8 帧与 VideoToolbox，冻结 App 和 GUI 真机交互仍待验证。
 48. **翻页预览与缓存边界**：预览在固定 900×560 应用内弹窗循环播放，支持播放、暂停、重新播放和关闭。翻页默认从右向左、可选从左向右，正式导出与预览、CPU 与 Core Image 共用同一方向。预览只在专用 `page_preview_cache` 直属层平铺唯一 MP4；启动清理通过 no-follow `dir_fd` 只移除超过 24 小时的普通 MP4，目录、符号链接和其他文件保持不变。功能见 `fefe3d3`，清理边界窄复核见 `db45103`；真机播放和冻结 App 由用户验证。
+49. **PowerPoint 固定授权中转**：macOS PowerPoint 只在 `~/Documents/融景Office中转/` 复制副本、打开文件并接收 PDF，不移动原件。正常结束按 manifest 精确清理本批副本/PDF，启动时清理严格超过 24 小时的崩溃残留；固定根设为 `0700`，全过程使用 no-follow、`dir_fd`、quarantine、inode + size，复制另核对 SHA-256 + size。功能见 `251d024`，安全加固见 `115bdf6`，源文件快照修复见 `3b31ad1`；独立阻断项窄复核 CLOSED，授权持久性、PowerPoint 真机和冻结 App 由用户验证。LibreOffice 流程不变。
 
 ---
 

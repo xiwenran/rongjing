@@ -64,6 +64,11 @@
 - 独立「资料导出」页面支持把 PPT 或 Word 批量导出为 PNG 页面
 - PPT 与 Word 严格按所选类型扫描；PPT 模式不接收 Word，Word 模式不接收 PPT
 - CLI 使用 `export-material` 子命令，可指定平台原生后端或 LibreOffice
+- macOS PowerPoint 使用固定 `~/Documents/融景Office中转/`：复制原 PPT 到中转目录，原件不移动；PowerPoint 从该目录打开，并把 PDF 输出到同一目录
+- 每次运行以 manifest 记录本批副本和 PDF；成功或正常失败时精确清理本批文件，程序崩溃遗留由启动清理在严格超过 24 小时后处理
+- 固定根权限为 `0700`；复制后核对 SHA-256 与大小，清理使用 no-follow、`dir_fd`、quarantine 及 inode + size 身份校验
+- 同一文件夹或多个文件夹首次使用均只需授权该固定根一次；macOS 是否持续保留授权由用户在真机验证
+- LibreOffice 导出流程保持不变
 
 ### 统一输入与输出规则
 
@@ -204,8 +209,9 @@ python3 cli.py export-material \
 ### 当前验证边界
 
 - 已验证：LibreOffice 导出 1 页 PPT 为 1440×1080 PNG；导出 1 页 Word 为 1224×1584 PNG，连续 2 次运行未覆盖旧目录
+- 已验证：macOS PowerPoint 固定中转的复制、manifest 精确清理、24 小时崩溃残留清理及身份校验已通过定向验证和独立窄复核；功能提交为 `251d024`、安全加固为 `115bdf6`、源文件快照修复为 `3b31ad1`
 - 已验证：页面序列视频为 H.264、10 FPS、96×64、10 帧，PTS 递增；offscreen GUI 与 41 项 Skill 链接检查通过
-- 未验证：PowerPoint 原生后端、Windows COM、冻结包和 GUI 真机交互
+- 未验证：macOS 对固定中转根的持久授权、PowerPoint 真机运行、Windows COM、冻结 App 和 GUI 真机交互
 
 ---
 

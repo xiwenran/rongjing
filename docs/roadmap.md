@@ -8,12 +8,6 @@
 
 ## 当前主线状态
 
-- PowerPoint 固定授权中转与副本清理 🚧
-  - 当前阶段：S1/S2 代码与最小 mock 验证已完成，等待独立安全审查；专项保持施工中。
-  - 一句话现状：PowerPoint/macOS 已改用固定平铺中转根，并按 run manifest 精确清理副本；原件不移动、不删除，授权持久性仍待用户真机验证。
-  - 阻塞：无。
-  - 最近验证：`python3 -m unittest _test_office_staging.py _test_document_exporter.py` 21 项通过；覆盖复制/manifest、dir_fd no-follow 精确清理、严格超过 24 小时、symlink/目录/越界名/根替换拒绝、`ppt_mac` 同根与 finally 清理、LibreOffice 仍用 `TemporaryDirectory`；`py_compile` 与 `git diff --check` 通过。未跑 PowerPoint、GUI、打包或全量测试，待独立审查。
-  - commit hash：待完成后补。
 
 ## 待确认区（等用户裁决：还在做 / 已关闭 / 废弃归档）
 
@@ -29,6 +23,7 @@
 
 ## 已关闭
 
+- PowerPoint 固定授权中转与副本清理 ✅ `251d0246dde9dc00464dc877e2f7975edd69935d`、`115bdf6137f0564d4fc2f13eb0bc57a3c3cd157a`、`3b31ad10d758e7d9bc250e3278fa7ad1eb7dc621` — 验证: 固定 `~/Documents/融景Office中转/` 复制而不移动原 PPT，PowerPoint 打开/输出同根；成功或正常失败按 manifest 精确清理本批副本/PDF，崩溃残留严格超过 24 小时启动清理；固定根 `0700`，no-follow、`dir_fd`、quarantine、inode + size 及复制 SHA-256 + size 校验已覆盖，LibreOffice 不变；独立阻断项窄复核 CLOSED。首次授权固定根一次的预期、授权持久性、PowerPoint 真机与冻结 App 由用户验证
 - 笔记本室内开放式随机场景默认提示词 ✅ `a54d2fc` — 验证: `bg-prompt` 定向断言确认开放随机环境、多图缩略图区分、示例非固定列表、4°–7° 右侧向左轻微角度、3:4/16:9 和无绿幕溢光均生效；教室场景不含该随机段落；用户已用实际样图确认视觉方向。教师资产库笔记链路同步直接继承融景默认 prompt
 - 预览弹窗 QtMultimedia 原生崩溃修复 ✅ `c2df5ed217ed7314061f711292d51845f2461ab1` — 验证: 预览播放完全移除 QtMultimedia/QVideoWindow，改用 PyAV 有界解码（最多 120 帧）与 QImage.copy 持有帧，由 QLabel + QTimer 循环播放；已有短预览 MP4 的 offscreen 实例验证帧加载、循环推进、暂停、重播与关闭释放均通过，`py_compile`、零残留检索和 `git diff --check` 通过；未运行真机窗口、Core Image、长视频、打包或全量测试
 - 翻页预览弹窗、方向设置与 24 小时缓存清理 ✅ `fefe3d3a563070f6216b1962e9916173a6ece564`、`db451032d05b44d389efd14312fcd84b3efa686e` — 验证: 900×560 应用内循环播放器支持播放、暂停、重新播放和关闭；默认右→左、可选左→右，正式导出与预览、CPU 与 Core Image 方向一致；专用 `page_preview_cache` 平铺唯一 MP4，启动时仅通过 no-follow `dir_fd` 清理直属层超过 24 小时的普通 MP4，目录、符号链接和其他文件不处理；独立审查阻断项窄复核 CLOSED。真机播放与冻结 App 由用户验证
