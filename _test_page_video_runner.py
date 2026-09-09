@@ -1,4 +1,4 @@
-"""V2 checks for RJ-M5-PAGETURN; artifacts are intentionally retained in qa/logs."""
+"""V2 checks for RJ-CI-P3; artifacts are intentionally retained in qa/logs."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from core.page_video_runner import (
 from models.template_model import Template
 
 
-ROOT = Path(__file__).parent / "qa" / "logs" / f"coreimage-video-p2-{uuid.uuid4().hex}"
+ROOT = Path(__file__).parent / "qa" / "logs" / f"coreimage-preview-p3-{uuid.uuid4().hex}"
 ROOT.mkdir(parents=True)
 os.environ["RONGJING_PAGE_CURL_CACHE_DIR"] = str(ROOT / "work-cache")
 APP = QApplication.instance() or QApplication([])
@@ -48,6 +48,7 @@ def make_pages(
 
 
 def make_template(folder: Path, size=(97, 65)) -> Template:
+    folder.mkdir(parents=True, exist_ok=True)
     bg_path = folder / "background.png"
     Image.new("RGB", size, (12, 12, 12)).save(bg_path)
     return Template(
@@ -196,7 +197,7 @@ def test_real_encoding_and_pts():
     (folder / "encoding-report.txt").write_text(
         f"codec={codec}\nfps={fps}\nsize={size[0]}x{size[1]}\nframes={len(frames)}\n"
         f"pts={pts}\nbackend={runner.actual_backends}\nencoder={runner.actual_encoders}\n"
-        f"video={video_path}\nmessage={result['message']}\nwork_dirs={runner.work_dirs}\n",
+        f"video={video_path.relative_to(ROOT)}\n",
         encoding="utf-8",
     )
 
@@ -348,6 +349,105 @@ def test_offscreen_ui_routing():
     app.processEvents()
 
 
+def test_offscreen_preview_ui_contract():
+    import ui.main_window as main_window_module
+    import core.page_video_runner as page_runner_module
+    from ui.main_window import MainWindow
+
+    folder = ROOT / "preview-ui"
+    pages = make_pages(folder, colors=((1, 2, 3), (4, 5, 6), (7, 8, 9)))
+    corrupt = folder / "page0.png"
+    corrupt.write_bytes(b"broken")
+    templates = folder / "templates"
+    backgrounds = folder / "backgrounds"
+    templates.mkdir(); backgrounds.mkdir()
+    window = MainWindow(str(templates), str(backgrounds), str(folder / "collages"))
+    window._set_batch_mode(2)
+    window._populate_video_table([str(corrupt), *pages])
+    assert not window.btn_page_preview.isHidden()
+
+    paper = make_template(folder / "paper")
+    paper.name = "纸张模板"
+    paper.template_type = "document_paper"
+    paper_key = window.tm.save(paper)
+    screen = make_template(folder / "screen")
+    screen.name = "屏幕模板"
+    screen_key = window.tm.save(screen)
+    window._video_row_selections = {0: [paper_key, screen_key]}
+    window.realism_check.setChecked(True)
+    window.realism_strength_spin.setValue(63)
+
+    calls = []
+
+    class FakeSignal:
+        def __init__(self):
+            self.slots = []
+
+        def connect(self, slot):
+            self.slots.append(slot)
+
+        def emit(self, *args):
+            for slot in self.slots:
+                slot(*args)
+
+    class FakePreviewRunner:
+        def __init__(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            self.progress = FakeSignal()
+            self.finished = FakeSignal()
+            self.output_paths = [kwargs["output_path"]]
+            Path(kwargs["output_path"]).parent.mkdir(parents=True, exist_ok=True)
+            Path(kwargs["output_path"]).write_bytes(b"preview")
+
+        def start(self):
+            pass
+
+        def abort(self):
+            pass
+
+    warnings = []
+    infos = []
+    opened = []
+    with (
+        mock.patch.object(page_runner_module, "ImageSequenceVideoRunner", FakePreviewRunner),
+        mock.patch.object(QMessageBox, "warning", side_effect=lambda *args: warnings.append(args[2])),
+        mock.patch.object(QMessageBox, "information", side_effect=lambda *args: infos.append(args[2])),
+        mock.patch.object(main_window_module.QDesktopServices, "openUrl", side_effect=lambda url: opened.append(url) or True),
+    ):
+        window._preview_page_turn()
+        args, kwargs = calls[-1]
+        task = args[0][0]
+        assert task[1] == pages[:2]
+        assert task[2][0].name == "屏幕模板"
+        assert kwargs["hold_seconds"] == 0.5
+        assert kwargs["turn_seconds"] == 0.7
+        assert kwargs["fps"] == 15
+        assert kwargs["max_output_width"] == 960
+        assert kwargs["realism_enabled"] is True
+        assert kwargs["realism_strength"] == 63
+        assert not window.btn_run.isEnabled()
+        assert not window.btn_page_preview.isEnabled()
+        assert not window.btn_abort.isHidden()
+
+        window._batch_runner.finished.emit(True, "backend=CPU 平面翻页；encoder=libx264")
+        assert window.btn_run.isEnabled() and window.btn_page_preview.isEnabled()
+        assert window.btn_abort.isHidden()
+        assert opened and opened[-1].toLocalFile() == kwargs["output_path"]
+        assert infos and "CPU 平面翻页" in infos[-1]
+
+        window._set_batch_running(True, preview=True)
+        window._on_preview_finished(False, "页面翻页视频失败：实际错误")
+        assert window.btn_run.isEnabled() and window.btn_page_preview.isEnabled()
+        assert warnings and warnings[-1] == "页面翻页视频失败：实际错误"
+
+    video = folder / "dummy.mp4"
+    video.write_bytes(b"placeholder")
+    window._populate_video_table([str(video)])
+    assert window.btn_page_preview.isHidden()
+    window.close()
+    APP.processEvents()
+
+
 def run_tests():
     test_policy_and_natural_sort()
     test_counts_pts_plan_and_transition_geometry()
@@ -356,7 +456,12 @@ def run_tests():
     test_static_cache_and_cpu_fallback_call_counts()
     test_core_image_one_batch_per_pair_and_encoder_selection()
     test_offscreen_ui_routing()
-    print(f"M5 page video V2 tests passed; evidence={ROOT}")
+    test_offscreen_preview_ui_contract()
+    (ROOT / "summary.txt").write_text(
+        "RJ-CI-P3 V2: preview UI and runner checks passed\n",
+        encoding="utf-8",
+    )
+    print(f"RJ-CI-P3 V2 tests passed; evidence={ROOT.name}")
 
 
 if __name__ == "__main__":

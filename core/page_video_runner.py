@@ -210,6 +210,8 @@ class ImageSequenceVideoRunner(QThread):
         fps: int = 25,
         realism_enabled: bool = True,
         realism_strength: int = 70,
+        output_path: str | None = None,
+        max_output_width: int | None = None,
         parent=None,
     ):
         """Tasks are ``(source_name, page_paths, screen_templates)`` tuples."""
@@ -220,10 +222,19 @@ class ImageSequenceVideoRunner(QThread):
             for source_name, page_paths, templates in tasks
         ]
         self.output_dir = output_dir
-        self.output_dirs = [
-            str(allocate_unique_directory(output_dir, source_name))
-            for source_name, _page_paths, _templates in self.tasks
-        ]
+        self.output_path = output_path
+        self.max_output_width = int(max_output_width) if max_output_width else None
+        if self.output_path:
+            if len(self.tasks) != 1 or len(self.tasks[0][2]) != 1:
+                raise ValueError("明确输出文件只支持一个页面来源和一个模板")
+            explicit_parent = str(Path(self.output_path).parent)
+            os.makedirs(explicit_parent, exist_ok=True)
+            self.output_dirs = [explicit_parent]
+        else:
+            self.output_dirs = [
+                str(allocate_unique_directory(output_dir, source_name))
+                for source_name, _page_paths, _templates in self.tasks
+            ]
         self.hold_seconds = float(hold_seconds)
         self.turn_seconds = float(turn_seconds)
         self.fps = int(fps)
@@ -328,7 +339,12 @@ class ImageSequenceVideoRunner(QThread):
         with Image.open(template.background_path) as opened_bg:
             opened_bg.load()
             source_size = opened_bg.size
-            target_size = even_size(source_size)
+            if self.max_output_width and source_size[0] > self.max_output_width:
+                scale = self.max_output_width / source_size[0]
+                scaled_size = (self.max_output_width, max(2, round(source_size[1] * scale)))
+            else:
+                scaled_size = source_size
+            target_size = even_size(scaled_size)
             bg_img = opened_bg.convert("RGB").resize(target_size, Image.Resampling.BILINEAR)
         scale_x = target_size[0] / source_size[0]
         scale_y = target_size[1] / source_size[1]
@@ -363,9 +379,14 @@ class ImageSequenceVideoRunner(QThread):
                     )
             transition_frames.append(cached_pair)
 
-        template_dir = Path(source_output_dir) / template.name
-        template_dir.mkdir(parents=True, exist_ok=True)
-        output_path = allocate_unique_file(template_dir, f"{Path(source_name).stem}.mp4")
+        if self.output_path:
+            output_path = Path(self.output_path)
+            if output_path.exists():
+                raise FileExistsError(f"预览文件已存在：{output_path.name}")
+        else:
+            template_dir = Path(source_output_dir) / template.name
+            template_dir.mkdir(parents=True, exist_ok=True)
+            output_path = allocate_unique_file(template_dir, f"{Path(source_name).stem}.mp4")
         codec_name, codec_options, codec_attrs = select_encoder(*target_size, self.fps)
         time_base = Fraction(1, self.fps)
         import av

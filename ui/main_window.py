@@ -16,8 +16,9 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QFrame, QScrollArea, QDialog, QCheckBox, QDialogButtonBox,
     QSizePolicy, QMenu, QWidgetAction,
 )
-from PyQt6.QtCore import Qt, QSize, QSettings, QPoint
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtCore import Qt, QSize, QSettings, QPoint, QUrl
+from PyQt6.QtGui import QFont, QColor, QDesktopServices
+from PIL import Image, UnidentifiedImageError
 
 from models.template_model import (
     Template,
@@ -595,6 +596,9 @@ class MainWindow(QMainWindow):
         self._collage_tab = None
         self._ai_generate_tab = None
         self._batch_runner = None
+        self._batch_running = False
+        self._preview_running = False
+        self._preview_output_path = None
         self._loaded_tpl_name: str = None   # track which template is currently loaded
         self._row_selections: dict = {}     # row index → list of template names
         self._picked_image_files = []
@@ -1134,9 +1138,12 @@ class MainWindow(QMainWindow):
         lbv.addWidget(self.progress_label)
         self.btn_run = _btn("  ▶   开始合成", self._run_batch, "primary")
         self.btn_run.setFixedHeight(48)
+        self.btn_page_preview = _btn("预览翻页", self._preview_page_turn, "scan")
+        self.btn_page_preview.setFixedHeight(48)
+        self.btn_page_preview.setVisible(False)
         self.btn_abort = _btn("  停止", self._abort_batch, "danger")
         self.btn_abort.setFixedHeight(48); self.btn_abort.setVisible(False)
-        lbv.addLayout(_row(self.btn_run, self.btn_abort))
+        lbv.addLayout(_row(self.btn_page_preview, self.btn_run, self.btn_abort))
         lsv.addWidget(ls_bottom)
 
         main_hl.addWidget(left_side)
@@ -2344,12 +2351,14 @@ class MainWindow(QMainWindow):
         self.video_table.setRowCount(0)
         self._video_input_kind = input_kind
         self._page_video_settings_widget.setVisible(input_kind == "image")
+        self.btn_page_preview.setVisible(input_kind == "image")
         if input_kind == "image":
             page_paths = normalize_page_paths(paths)
             if not page_paths:
                 QMessageBox.warning(self, "输入不支持", "过滤后没有有效页面图片")
                 self._video_input_kind = None
                 self._page_video_settings_widget.hide()
+                self.btn_page_preview.hide()
                 return
             source_name = (
                 os.path.basename(os.path.normpath(paths[0]))
@@ -2366,6 +2375,7 @@ class MainWindow(QMainWindow):
             self.video_table.setItem(row, 1, count_item)
             self.video_table.setRowHeight(row, 44)
             self.video_table.setCellWidget(row, 2, self._make_video_tpl_btn(row, []))
+            self.video_table.setCurrentCell(row, 0)
             return
 
         import av
@@ -2391,8 +2401,81 @@ class MainWindow(QMainWindow):
             # Template picker button (column 2)
             tpl_btn = self._make_video_tpl_btn(row, [])
             self.video_table.setCellWidget(row, 2, tpl_btn)
+        if self.video_table.rowCount():
+            self.video_table.setCurrentCell(0, 0)
+
+    def _set_batch_running(self, running: bool, *, preview: bool = False):
+        self._batch_running = running
+        self._preview_running = running and preview
+        self.btn_run.setEnabled(not running)
+        self.btn_page_preview.setEnabled(not running)
+        self.btn_run.setVisible(not running or preview)
+        self.btn_abort.setVisible(running)
+        if running:
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+
+    def _preview_page_turn(self):
+        if self._batch_running:
+            QMessageBox.warning(self, "提示", "当前任务还在运行，请先停止或等待完成")
+            return
+        if self._video_input_kind != "image":
+            QMessageBox.warning(self, "提示", "翻页预览只用于页面图片")
+            return
+        row = self.video_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "提示", "请先选择要预览的页面来源")
+            return
+        item = self.video_table.item(row, 0)
+        valid_paths = []
+        for path in normalize_page_paths(item.data(Qt.ItemDataRole.UserRole)):
+            try:
+                with Image.open(path) as image:
+                    image.verify()
+            except (UnidentifiedImageError, OSError, ValueError):
+                continue
+            valid_paths.append(path)
+            if len(valid_paths) == 2:
+                break
+        if len(valid_paths) < 2:
+            QMessageBox.warning(self, "提示", "至少需要 2 张有效页面图片才能预览翻页")
+            return
+
+        template = None
+        for name in self._video_row_selections.get(row, []):
+            candidate = self.tm.load(name)
+            if candidate and (getattr(candidate, "template_type", "screen") or "screen") == "screen":
+                template = candidate
+                break
+        if template is None:
+            QMessageBox.warning(self, "提示", "请先为当前页面来源选择屏幕类场景模板")
+            return
+
+        from core.page_video_runner import ImageSequenceVideoRunner, allocate_page_curl_work_dir
+
+        preview_dir = allocate_page_curl_work_dir()
+        preview_path = preview_dir / "翻页预览.mp4"
+        self._preview_output_path = str(preview_path)
+        self._batch_runner = ImageSequenceVideoRunner(
+            [(item.text(), valid_paths, [template])],
+            str(preview_dir),
+            hold_seconds=0.5,
+            turn_seconds=0.7,
+            fps=15,
+            realism_enabled=self.realism_check.isChecked(),
+            realism_strength=self.realism_strength_spin.value(),
+            output_path=self._preview_output_path,
+            max_output_width=960,
+        )
+        self._batch_runner.progress.connect(self._on_progress)
+        self._batch_runner.finished.connect(self._on_preview_finished)
+        self._set_batch_running(True, preview=True)
+        self.progress_label.setText("正在生成翻页预览…")
+        self._batch_runner.start()
 
     def _run_batch(self):
+        if self._batch_running:
+            QMessageBox.warning(self, "提示", "当前任务还在运行，请先停止或等待完成"); return
         output_dir = self.output_dir_edit.text().strip()
         if not output_dir:
             QMessageBox.warning(self, "提示", "请选择输出文件夹"); return
@@ -2450,8 +2533,7 @@ class MainWindow(QMainWindow):
         )
         self._batch_runner.progress.connect(self._on_progress)
         self._batch_runner.finished.connect(self._on_finished)
-        self.btn_run.setVisible(False); self.btn_abort.setVisible(True)
-        self.progress_bar.setVisible(True); self.progress_bar.setValue(0)
+        self._set_batch_running(True)
         self.progress_label.setText("正在处理…")
         self._batch_runner.start()
 
@@ -2492,8 +2574,7 @@ class MainWindow(QMainWindow):
             )
         self._batch_runner.progress.connect(self._on_progress)
         self._batch_runner.finished.connect(self._on_finished)
-        self.btn_run.setVisible(False); self.btn_abort.setVisible(True)
-        self.progress_bar.setVisible(True); self.progress_bar.setValue(0)
+        self._set_batch_running(True)
         self.progress_label.setText("正在处理视频…")
         self._batch_runner.start()
 
@@ -2505,7 +2586,17 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(f"[{done} / {total}]  {msg}")
 
     def _on_finished(self, success, msg):
-        self.btn_run.setVisible(True); self.btn_abort.setVisible(False)
+        self._set_batch_running(False)
         self.progress_label.setText(msg)
         if success: QMessageBox.information(self, "完成", msg)
         else:       QMessageBox.warning(self, "处理结果", msg)
+
+    def _on_preview_finished(self, success, msg):
+        preview_path = self._preview_output_path
+        self._set_batch_running(False)
+        self.progress_label.setText(msg)
+        if success and preview_path and os.path.isfile(preview_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(preview_path))
+            QMessageBox.information(self, "预览已生成", msg)
+        else:
+            QMessageBox.warning(self, "预览失败", msg)
