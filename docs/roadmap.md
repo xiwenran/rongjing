@@ -10,15 +10,15 @@
 
 ### 🚧 Mac Core Image 曲面翻页与页面视频加速
 
-- 当前阶段：P2 接入页面视频、静态帧缓存、VideoToolbox 与 CPU 回退
-- 一句话现状：P1 已完成 Swift/Core Image 批量离屏曲面翻页验证，进入页面视频接线阶段。
+- 当前阶段：P3 前两页预览 UI
+- 一句话现状：P2 已完成正式页面视频接线、静态帧缓存、曲面帧限流与 VideoToolbox/CPU 回退。
 - 阻塞：无
-- 最近验证：同一 manifest 经 `CIPageCurlWithShadowTransition` 输出 3 张 640×360 PNG；首尾与源图逐像素一致，中间帧具有曲面卷边、白色背面、折痕明暗与阴影。
-- commit hash：`11b310dcc0cca85ed00f91b0f58c177335850533`
+- 最近验证：正式 runner 回读 `Core Image` + `h264_videotoolbox`，H.264 10 FPS、640×360、10 帧且 PTS 递增；静态调用计数与 8 帧上限断言通过。
+- commit hash：`2a9272bdab79973b2d485dc979a6059251822225`
 - 阶段清单：
   - ✅ P1：本机 Core Image 可用性 / 离屏渲染探针 `11b310dcc0cca85ed00f91b0f58c177335850533` — 验证: Swift helper 单进程读取同一 manifest，系统 `CIPageCurlWithShadowTransition` 离屏输出 progress 0/0.5/1 三帧；首尾像素差 0，中间帧相对两端平均差 21.43/18.68，目检确认曲面卷边、纸张背面、折痕与阴影
-  - 🚧 P2：接入页面视频、静态帧缓存、VideoToolbox 与 CPU 回退
-  - ⏸ P3：前两页预览 UI
+  - ✅ P2：接入页面视频、静态帧缓存、VideoToolbox 与 CPU 回退 `2a9272bdab79973b2d485dc979a6059251822225` — 验证: 正式 runner 实际 backend 为 `Core Image（CIPageCurlWithShadowTransition）`、encoder 为 `h264_videotoolbox`，H.264 10 FPS、640×360、10 帧且 PTS 递增；静态页 embed/realism 每模板每页仅调用一次，每 pair 单次批量调用，独立曲面帧上限 8 帧
+  - 🚧 P3：前两页预览 UI
   - ⏸ P4：真实样本、文档与审查收口
 
 ## 待确认区（等用户裁决：还在做 / 已关闭 / 废弃归档）
