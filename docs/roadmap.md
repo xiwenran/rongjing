@@ -10,14 +10,14 @@
 
 ### 🚧 Mac Core Image 曲面翻页与页面视频加速
 
-- 当前阶段：P1 本机 Core Image 可用性 / 离屏渲染探针
-- 一句话现状：已完成官方文档与源码调研，准备在本机验证 Core Image 离屏渲染链路。
+- 当前阶段：P2 接入页面视频、静态帧缓存、VideoToolbox 与 CPU 回退
+- 一句话现状：P1 已完成 Swift/Core Image 批量离屏曲面翻页验证，进入页面视频接线阶段。
 - 阻塞：无
-- 最近验证：仅完成官方文档与源码调研，尚未本机验证。
-- commit hash：待本阶段实现并验证后补充
+- 最近验证：同一 manifest 经 `CIPageCurlWithShadowTransition` 输出 3 张 640×360 PNG；首尾与源图逐像素一致，中间帧具有曲面卷边、白色背面、折痕明暗与阴影。
+- commit hash：`11b310dcc0cca85ed00f91b0f58c177335850533`
 - 阶段清单：
-  - 🚧 P1：本机 Core Image 可用性 / 离屏渲染探针
-  - ⏸ P2：接入页面视频、静态帧缓存、VideoToolbox 与 CPU 回退
+  - ✅ P1：本机 Core Image 可用性 / 离屏渲染探针 `11b310dcc0cca85ed00f91b0f58c177335850533` — 验证: Swift helper 单进程读取同一 manifest，系统 `CIPageCurlWithShadowTransition` 离屏输出 progress 0/0.5/1 三帧；首尾像素差 0，中间帧相对两端平均差 21.43/18.68，目检确认曲面卷边、纸张背面、折痕与阴影
+  - 🚧 P2：接入页面视频、静态帧缓存、VideoToolbox 与 CPU 回退
   - ⏸ P3：前两页预览 UI
   - ⏸ P4：真实样本、文档与审查收口
 
