@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-import shutil
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -12,28 +12,33 @@ from pathlib import Path
 PREVIEW_CACHE_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
+def _scandir_fd(root_fd: int):
+    return os.scandir(root_fd)
+
+
 def preview_cache_root(app_data_dir: str | os.PathLike[str]) -> Path:
     return Path(app_data_dir).expanduser() / "page_preview_cache"
 
 
-def allocate_preview_dir(root: str | os.PathLike[str]) -> Path:
-    cache_root = Path(root).expanduser()
+def _validated_preview_root(root: str | os.PathLike[str]) -> Path:
+    raw_root = os.fspath(root)
+    if not raw_root:
+        raise ValueError("预览缓存根目录不能为空")
+    cache_root = Path(raw_root).expanduser()
+    if not cache_root.is_absolute():
+        raise ValueError("预览缓存根目录必须是绝对路径")
+    if cache_root.name != "page_preview_cache":
+        raise ValueError("预览缓存根目录缺少专用目录标识")
+    return cache_root
+
+
+def allocate_preview_file(root: str | os.PathLike[str]) -> Path:
+    cache_root = _validated_preview_root(root)
     cache_root.mkdir(parents=True, exist_ok=True)
-    destination = cache_root / f"preview-{uuid.uuid4().hex}"
-    destination.mkdir(exist_ok=False)
-    return destination
-
-
-def _contains_symlink(path: Path) -> bool:
-    if path.is_symlink():
-        return True
-    if not path.is_dir():
-        return False
-    for current, dirs, files in os.walk(path, followlinks=False):
-        current_path = Path(current)
-        if any((current_path / name).is_symlink() for name in (*dirs, *files)):
-            return True
-    return False
+    while True:
+        destination = cache_root / f"page-turn-preview-{uuid.uuid4().hex}.mp4"
+        if not destination.exists():
+            return destination
 
 
 def cleanup_expired_preview_cache(
@@ -47,43 +52,53 @@ def cleanup_expired_preview_cache(
         "removed": 0,
         "kept": 0,
         "skipped_symlinks": 0,
+        "skipped": 0,
         "errors": [],
     }
-    cache_root = Path(root).expanduser()
     try:
-        if cache_root.is_symlink():
-            stats["errors"].append("预览缓存根目录是符号链接，已跳过")
-            return stats
-        cache_root.mkdir(parents=True, exist_ok=True)
-        resolved_root = cache_root.resolve(strict=True)
-    except OSError as exc:
+        cache_root = _validated_preview_root(root)
+    except (TypeError, ValueError, OSError) as exc:
         stats["errors"].append(str(exc))
+        return stats
+
+    if (
+        os.name != "posix"
+        or not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "O_NOFOLLOW")
+        or os.scandir not in os.supports_fd
+        or os.unlink not in os.supports_dir_fd
+    ):
+        stats["skipped"] += 1
+        stats["errors"].append("当前平台不支持安全的目录描述符清理，已跳过")
         return stats
 
     cutoff = (time.time() if now is None else float(now)) - float(max_age_seconds)
+    root_fd = None
     try:
-        children = list(cache_root.iterdir())
+        root_fd = os.open(
+            cache_root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        with _scandir_fd(root_fd) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_symlink():
+                        stats["skipped_symlinks"] += 1
+                        continue
+                    entry_stat = entry.stat(follow_symlinks=False)
+                    if not stat.S_ISREG(entry_stat.st_mode) or not entry.name.endswith(".mp4"):
+                        stats["skipped"] += 1
+                        continue
+                    if entry_stat.st_mtime >= cutoff:
+                        stats["kept"] += 1
+                        continue
+                    os.unlink(entry.name, dir_fd=root_fd)
+                    stats["removed"] += 1
+                except OSError as exc:
+                    stats["errors"].append(f"{entry.name}: {exc}")
     except OSError as exc:
         stats["errors"].append(str(exc))
-        return stats
-
-    for child in children:
-        try:
-            if _contains_symlink(child):
-                stats["skipped_symlinks"] += 1
-                continue
-            resolved_child = child.resolve(strict=True)
-            if resolved_child.parent != resolved_root:
-                stats["errors"].append(f"缓存项越出专用根目录，已跳过：{child.name}")
-                continue
-            if child.stat().st_mtime >= cutoff:
-                stats["kept"] += 1
-                continue
-            if child.is_dir():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-            stats["removed"] += 1
-        except OSError as exc:
-            stats["errors"].append(f"{child.name}: {exc}")
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
     return stats

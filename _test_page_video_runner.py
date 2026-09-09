@@ -26,7 +26,7 @@ from core.page_video_runner import (
     transition_progresses,
 )
 from core.core_image_page_curl import LEFT_TO_RIGHT, RIGHT_TO_LEFT, normalize_direction
-from core.page_preview_cache import cleanup_expired_preview_cache
+from core.page_preview_cache import allocate_preview_file, cleanup_expired_preview_cache
 from models.template_model import Template
 
 
@@ -136,35 +136,71 @@ def test_page_turn_direction_mirror_contract():
         raise AssertionError("未知方向未被拒绝")
 
 
-def test_preview_cache_cleanup_plan_without_deleting():
+def test_preview_cache_cleanup_is_flat_and_fd_bounded():
     folder = ROOT / "preview-cache"
     cache_root = folder / "page_preview_cache"
+    old_file = cache_root / "page-turn-preview-old.mp4"
+    young_file = cache_root / "page-turn-preview-young.mp4"
+    old_other = cache_root / "old-file.tmp"
     old_dir = cache_root / "old-dir"
-    young_dir = cache_root / "young-dir"
-    old_file = cache_root / "old-file.tmp"
     outside = folder / "outside.txt"
     old_dir.mkdir(parents=True)
-    young_dir.mkdir()
-    old_file.write_text("old", encoding="utf-8")
+    old_file.write_bytes(b"old")
+    young_file.write_bytes(b"young")
+    old_other.write_text("old", encoding="utf-8")
     outside.write_text("outside", encoding="utf-8")
-    symlink = cache_root / "outside-link"
+    symlink = cache_root / "outside-link.mp4"
     symlink.symlink_to(outside)
     now = 2_000_000_000.0
     old = now - 25 * 60 * 60
     os.utime(old_dir, (old, old))
     os.utime(old_file, (old, old))
-    os.utime(young_dir, (now, now))
-    with (
-        mock.patch("core.page_preview_cache.shutil.rmtree") as rmtree_mock,
-        mock.patch.object(Path, "unlink") as unlink_mock,
-    ):
-        stats = cleanup_expired_preview_cache(cache_root, now=now)
-    assert stats["removed"] == 2
+    os.utime(old_other, (old, old))
+    os.utime(young_file, (now, now))
+    stats = cleanup_expired_preview_cache(cache_root, now=now)
+    assert stats["removed"] == 1
     assert stats["kept"] == 1
     assert stats["skipped_symlinks"] == 1
-    rmtree_mock.assert_called_once_with(old_dir)
-    unlink_mock.assert_called_once_with()
+    assert stats["skipped"] == 2
+    assert not old_file.exists() and young_file.exists()
+    assert old_other.exists() and old_dir.is_dir()
     assert outside.exists() and symlink.is_symlink()
+
+    allocated = allocate_preview_file(cache_root)
+    assert allocated.parent == cache_root
+    assert allocated.name.startswith("page-turn-preview-") and allocated.suffix == ".mp4"
+    assert not allocated.exists()
+
+    for invalid_root in ("", Path(""), ".", "relative/page_preview_cache", folder / "not-preview-cache"):
+        rejected = cleanup_expired_preview_cache(invalid_root, now=now)
+        assert rejected["removed"] == 0 and rejected["errors"]
+
+
+def test_preview_cache_root_replacement_does_not_redirect_deletion():
+    folder = ROOT / "preview-cache-root-swap"
+    cache_root = folder / "page_preview_cache"
+    held_root = folder / "held-original-root"
+    cache_root.mkdir(parents=True)
+    original = cache_root / "page-turn-preview-original.mp4"
+    original.write_bytes(b"original")
+    now = 2_000_000_000.0
+    old = now - 25 * 60 * 60
+    os.utime(original, (old, old))
+    real_scandir = os.scandir
+
+    def swap_root_then_scan(root_fd):
+        cache_root.rename(held_root)
+        cache_root.mkdir()
+        replacement = cache_root / "page-turn-preview-replacement.mp4"
+        replacement.write_bytes(b"replacement")
+        os.utime(replacement, (old, old))
+        return real_scandir(root_fd)
+
+    with mock.patch("core.page_preview_cache._scandir_fd", side_effect=swap_root_then_scan):
+        stats = cleanup_expired_preview_cache(cache_root, now=now)
+    assert stats["removed"] == 1
+    assert not (held_root / original.name).exists()
+    assert (cache_root / "page-turn-preview-replacement.mp4").exists()
 
 
 def test_offscreen_preview_dialog_contract():
@@ -586,7 +622,10 @@ def test_offscreen_preview_ui_contract():
         assert kwargs["realism_enabled"] is True
         assert kwargs["realism_strength"] == 63
         assert kwargs["direction"] == RIGHT_TO_LEFT
-        assert Path(kwargs["page_curl_work_root"]).parent == Path(kwargs["output_path"]).parent
+        preview_path = Path(kwargs["output_path"])
+        assert preview_path.parent == window._preview_cache_root
+        assert preview_path.name.startswith("page-turn-preview-") and preview_path.suffix == ".mp4"
+        assert "page_curl_work_root" not in kwargs
         assert not window.btn_run.isEnabled()
         assert not window.btn_page_preview.isEnabled()
         assert not window.btn_abort.isHidden()
@@ -615,7 +654,8 @@ def run_tests():
     test_policy_and_natural_sort()
     test_counts_pts_plan_and_transition_geometry()
     test_page_turn_direction_mirror_contract()
-    test_preview_cache_cleanup_plan_without_deleting()
+    test_preview_cache_cleanup_is_flat_and_fd_bounded()
+    test_preview_cache_root_replacement_does_not_redirect_deletion()
     test_offscreen_preview_dialog_contract()
     test_even_size_cancel_bad_image_and_non_overwrite()
     test_real_encoding_and_pts()

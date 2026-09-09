@@ -31,7 +31,7 @@ from core.file_policy import is_valid_input_file
 from core.page_video_runner import classify_media_paths, normalize_page_paths
 from core.core_image_page_curl import LEFT_TO_RIGHT, RIGHT_TO_LEFT
 from core.page_preview_cache import (
-    allocate_preview_dir,
+    allocate_preview_file,
     cleanup_expired_preview_cache,
     preview_cache_root,
 )
@@ -2486,15 +2486,14 @@ class MainWindow(QMainWindow):
         from core.page_video_runner import ImageSequenceVideoRunner
 
         try:
-            preview_dir = allocate_preview_dir(self._preview_cache_root)
-        except OSError as exc:
+            preview_path = allocate_preview_file(self._preview_cache_root)
+        except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "预览失败", f"无法创建预览缓存：{exc}")
             return
-        preview_path = preview_dir / "翻页预览.mp4"
         self._preview_output_path = str(preview_path)
         self._batch_runner = ImageSequenceVideoRunner(
             [(item.text(), valid_paths, [template])],
-            str(preview_dir),
+            str(self._preview_cache_root),
             hold_seconds=0.5,
             turn_seconds=0.7,
             fps=15,
@@ -2503,7 +2502,6 @@ class MainWindow(QMainWindow):
             output_path=self._preview_output_path,
             max_output_width=960,
             direction=self.page_direction_combo.currentData() or RIGHT_TO_LEFT,
-            page_curl_work_root=str(preview_dir / "render_cache"),
         )
         self._batch_runner.progress.connect(self._on_progress)
         self._batch_runner.finished.connect(self._on_preview_finished)
