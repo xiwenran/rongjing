@@ -14,7 +14,6 @@
   - 阻塞：无。
   - 最近验证：用户截图确认现状仍是消息框 + 系统播放器。
   - commit hash：待完成后补。
-- 笔记本室内 3:4 真实场景模板重制 🚧 — 按已确认样图重做 6 张：真实 16:9 屏幕、夜晚普通居家环境，斜拍统一为镜头从右向左；完成后覆盖运行模板并用真实资料页轻量合成验证。
 
 ## 待确认区（等用户裁决：还在做 / 已关闭 / 废弃归档）
 
@@ -30,6 +29,7 @@
 
 ## 已关闭
 
+- 笔记本室内 3:4 真实场景模板重制 ✅ `e006bf2` — 验证: 6 个 `20260909-laptop-indoor-dark-*` 运行模板均为 `1086×1448`、绿幕四角未碰边；指定「二上数学早读」页面经 `cli.py process` 实际输出 6 张 JPEG，联系图确认内容落位；默认提示词的 3:4、16:9、右侧向左轻微斜拍和无绿幕溢光断言通过。本轮按用户要求未重打包或执行全量测试
 - Mac Core Image 曲面翻页与页面视频加速 ✅ `8fe722302841783c0a81213c1b3faa6b4ed41550` — 验证: 系统 `CIPageCurlWithShadowTransition` 真实输出卷边、背面与阴影三帧；正式 runner 回读 Core Image + `h264_videotoolbox`、10 帧 PTS 递增，静态页每模板每页只合成一次，前两页预览已接入；独立审查两项阻断窄复核 CLOSED。实际冻结 App 与 GUI 真机操作由用户自行验证
 - 资料导出统一底座、全链 AppleDouble 过滤、永不覆盖、页面翻页视频与 Skills 迁移 ✅ `0611e5d22b2ad882ad3912f4abc7793e3c590cb4` — 验证: PPT/Word 经 LibreOffice 真实导出 1 页 PNG，翻页视频 H.264 样本的 10 FPS、10 帧与单调 PTS 回读通过；CLI 过滤阻断经独立窄复核 CLOSED，两个 Skill 四端链接对账 41 项通过。PowerPoint 原生后端、Windows COM、冻结包与真机交互未验证
 - 拼图缩略图拖动排序 ✅ `3ccabb7a1ceaf2d8714a1d03391a95bf9dab307f` — 验证: `python3 -m py_compile ui/collage_tab.py`、`git diff --check`、`QT_QPA_PLATFORM=offscreen` 冒烟确认拖动重排后文件顺序、排除状态和多来源当前项同步正确；本轮按用户要求未做重打包/全量测试
