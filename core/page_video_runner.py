@@ -73,6 +73,54 @@ def normalize_page_paths(paths: Iterable[str]) -> list[str]:
     return [str(unique[key]) for key in sorted(unique, key=natural_sort_key)]
 
 
+def group_page_image_sources(paths: Iterable[str]) -> list[tuple[str, list[str]]]:
+    """Turn selected images/folders into independent page-sequence sources.
+
+    A selected folder containing image-bearing child folders creates one source
+    per child folder. Otherwise the selected folder itself is one source.
+    """
+    groups: list[tuple[str, list[str]]] = []
+    loose_images: list[str] = []
+    for raw_path in paths:
+        path = Path(raw_path)
+        if is_valid_input_file(path, "image"):
+            loose_images.append(str(path))
+            continue
+        if not path.is_dir():
+            continue
+
+        child_groups: list[tuple[str, list[str]]] = []
+        try:
+            child_dirs = sorted(
+                (
+                    child
+                    for child in path.iterdir()
+                    if not child.name.startswith(".") and child.is_dir()
+                ),
+                key=lambda child: natural_sort_key(child.name),
+            )
+        except OSError:
+            child_dirs = []
+        for child in child_dirs:
+            pages = normalize_page_paths([str(child)])
+            if pages:
+                child_groups.append((child.name, pages))
+        if child_groups:
+            groups.extend(child_groups)
+            continue
+
+        pages = normalize_page_paths([str(path)])
+        if pages:
+            groups.append((path.name or "页面图片", pages))
+
+    if loose_images:
+        pages = normalize_page_paths(loose_images)
+        if pages:
+            parent_name = Path(pages[0]).parent.name or "页面图片"
+            groups.append((parent_name, pages))
+    return groups
+
+
 def frame_counts(page_count: int, hold_seconds: float, turn_seconds: float, fps: int) -> tuple[int, int, int]:
     hold_frames = max(1, round(hold_seconds * fps))
     turn_frames = max(1, round(turn_seconds * fps)) if page_count > 1 else 0

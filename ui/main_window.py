@@ -28,7 +28,11 @@ from models.template_model import (
 )
 from core.batch_runner import BatchRunner, VideoRunner, get_image_files, natural_sort_key
 from core.file_policy import is_valid_input_file
-from core.page_video_runner import classify_media_paths, normalize_page_paths
+from core.page_video_runner import (
+    classify_media_paths,
+    group_page_image_sources,
+    normalize_page_paths,
+)
 from core.core_image_page_curl import LEFT_TO_RIGHT, RIGHT_TO_LEFT
 from core.page_preview_cache import (
     allocate_preview_file,
@@ -2392,6 +2396,20 @@ class MainWindow(QMainWindow):
             self._populate_video_table(paths)
 
     def _pick_page_image_folder(self):
+        if sys.platform == "darwin":
+            loc = (
+                f' default location (POSIX file "{self._last_dir_videos}")'
+                if self._last_dir_videos and os.path.isdir(self._last_dir_videos)
+                else ""
+            )
+            script = f'set f to (choose folder with prompt "选择页面图片文件夹（可多选）"{loc} with multiple selections allowed)\nset out to ""\nrepeat with p in f\n    set out to out & POSIX path of p & "\\n"\nend repeat\nout'
+            result, ran = _run_osascript(script)
+            if ran:
+                paths = [p.rstrip("/") for p in result.strip().split("\n") if p]
+                if paths:
+                    self._save_dir("videos", os.path.commonpath(paths))
+                    self._populate_video_table(paths)
+                return
         path = pick_folder(self, "选择页面图片文件夹", self._last_dir_videos)
         if path:
             self._save_dir("videos", path)
@@ -2412,8 +2430,8 @@ class MainWindow(QMainWindow):
         self._sync_page_preview_state()
         self._sync_page_music_state()
         if input_kind == "image":
-            page_paths = normalize_page_paths(paths)
-            if not page_paths:
+            page_groups = group_page_image_sources(paths)
+            if not page_groups:
                 QMessageBox.warning(self, "输入不支持", "过滤后没有有效页面图片")
                 self._video_input_kind = None
                 self._page_video_settings_widget.hide()
@@ -2421,22 +2439,18 @@ class MainWindow(QMainWindow):
                 self._sync_page_preview_state()
                 self._sync_page_music_state()
                 return
-            source_name = (
-                os.path.basename(os.path.normpath(paths[0]))
-                if len(paths) == 1 and os.path.isdir(paths[0])
-                else os.path.basename(os.path.dirname(page_paths[0])) or "页面图片"
-            )
-            row = self.video_table.rowCount()
-            self.video_table.insertRow(row)
-            item = QTableWidgetItem(source_name)
-            item.setData(Qt.ItemDataRole.UserRole, page_paths)
-            self.video_table.setItem(row, 0, item)
-            count_item = QTableWidgetItem(f"{len(page_paths)} 页")
-            count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.video_table.setItem(row, 1, count_item)
-            self.video_table.setRowHeight(row, 44)
-            self.video_table.setCellWidget(row, 2, self._make_video_tpl_btn(row, []))
-            self.video_table.setCurrentCell(row, 0)
+            for source_name, page_paths in page_groups:
+                row = self.video_table.rowCount()
+                self.video_table.insertRow(row)
+                item = QTableWidgetItem(source_name)
+                item.setData(Qt.ItemDataRole.UserRole, page_paths)
+                self.video_table.setItem(row, 0, item)
+                count_item = QTableWidgetItem(f"{len(page_paths)} 页")
+                count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.video_table.setItem(row, 1, count_item)
+                self.video_table.setRowHeight(row, 44)
+                self.video_table.setCellWidget(row, 2, self._make_video_tpl_btn(row, []))
+            self.video_table.setCurrentCell(0, 0)
             return
 
         import av
