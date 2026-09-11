@@ -491,26 +491,16 @@ class ImageSequenceVideoRunner(QThread):
 
         # Static pages deliberately keep one fixed realism-noise sample. Reusing the
         # final composited frame avoids repeating perspective/filter work during holds.
+        self._emit_progress(
+            done,
+            total,
+            f"{source_name} → {template.name}（正在准备模板画面）",
+            force=True,
+        )
         static_frames = [
             apply_realism(embed_image_pil_fast(page, cache), realism_cache, frame_index=index)
             for index, page in enumerate(pages)
         ]
-        transition_frames: list[list[Image.Image]] = []
-        for pair_index, pair in enumerate(transitions):
-            cached_pair = []
-            for sample_index, page in enumerate(pair):
-                if sample_index == len(pair) - 1:
-                    cached_pair.append(static_frames[pair_index + 1])
-                else:
-                    embedded = embed_image_pil_fast(page, cache)
-                    cached_pair.append(
-                        apply_realism(
-                            embedded,
-                            realism_cache,
-                            frame_index=len(pages) + pair_index * MAX_CURVE_FRAMES + sample_index,
-                        )
-                    )
-            transition_frames.append(cached_pair)
 
         if self.output_path:
             output_path = Path(self.output_path)
@@ -527,9 +517,36 @@ class ImageSequenceVideoRunner(QThread):
             for page_index, static_frame in enumerate(static_frames):
                 for _ in range(hold_frames):
                     yield static_frame
-                if page_index < len(transition_frames):
+                if page_index < len(transitions):
+                    # Keep only one composited transition pair in memory. The old
+                    # all-pairs cache could exceed 1 GB at 1080p and stall between
+                    # templates while macOS swapped memory.
+                    self._emit_progress(
+                        done + page_index * (hold_frames + turn_frames) + hold_frames,
+                        total,
+                        f"{source_name} → {template.name}（正在准备第 {page_index + 1} 页翻页）",
+                        force=True,
+                    )
+                    pair = transitions[page_index]
+                    cached_pair = []
+                    for sample_index, page in enumerate(pair):
+                        if sample_index == len(pair) - 1:
+                            cached_pair.append(static_frames[page_index + 1])
+                        else:
+                            embedded = embed_image_pil_fast(page, cache)
+                            cached_pair.append(
+                                apply_realism(
+                                    embedded,
+                                    realism_cache,
+                                    frame_index=(
+                                        len(pages)
+                                        + page_index * MAX_CURVE_FRAMES
+                                        + sample_index
+                                    ),
+                                )
+                            )
                     for index in mapping:
-                        yield transition_frames[page_index][index]
+                        yield cached_pair[index]
 
         music_track = self._choose_music_track()
 
@@ -631,15 +648,33 @@ class ImageSequenceVideoRunner(QThread):
                     done + encoded_count, total, progress_message
                 )
             if not self._abort:
+                self._emit_progress(
+                    done + encoded_count,
+                    total,
+                    f"{progress_message}（正在完成画面编码）",
+                    force=True,
+                )
                 for packet in stream.encode():
                     container.mux(packet)
                 if music_track is not None:
+                    self._emit_progress(
+                        done + encoded_count,
+                        total,
+                        f"{progress_message}（正在封装配乐）",
+                        force=True,
+                    )
                     self._encode_bgm(
                         container,
                         audio_stream,
                         music_track,
                         target_samples=round(encoded_count * AUDIO_SAMPLE_RATE / self.fps),
                     )
+                self._emit_progress(
+                    done + encoded_count,
+                    total,
+                    f"{progress_message}（正在写入视频文件）",
+                    force=True,
+                )
         return encoded_count
 
     def _iter_bgm_frames(self, track: dict, target_samples: int):
