@@ -313,19 +313,22 @@ DOCUMENT_PRESETS = {
 
 def _run_osascript(script: str):
     """Run osascript. Returns (result_str, ran: bool).
-    ran=True means osascript was available (even if user cancelled).
-    ran=False means osascript not found → fall back to Qt dialog.
+    ran=True means the picker completed or the user cancelled.
+    ran=False means the picker failed and the caller should use Qt fallback.
     """
     try:
         r = subprocess.run(
             ["osascript", "-e", script],
             capture_output=True, text=True, timeout=120,
         )
-        # returncode 0 = success, non-0 = user cancelled or other error
-        # Either way, osascript WAS available, so don't show Qt fallback
-        return r.stdout.strip() if r.returncode == 0 else "", True
-    except FileNotFoundError:
-        return "", False   # osascript not installed → use Qt
+        if r.returncode == 0:
+            return r.stdout.strip(), True
+        error = r.stderr.lower()
+        if "user canceled" in error or "user cancelled" in error or "(-128)" in error:
+            return "", True
+        return "", False
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return "", False
 
 
 def pick_image(parent, title="选择图片", default_dir="") -> str:
@@ -2365,7 +2368,11 @@ class MainWindow(QMainWindow):
 
     def _pick_video_files(self):
         if sys.platform == "darwin":
-            loc = f' default location (POSIX file "{self._last_dir_videos}")' if self._last_dir_videos else ""
+            loc = (
+                f' default location (POSIX file "{self._last_dir_videos}")'
+                if self._last_dir_videos and os.path.isdir(self._last_dir_videos)
+                else ""
+            )
             script = f'set f to (choose file with prompt "选择视频或页面图片"{loc} with multiple selections allowed)\nset out to ""\nrepeat with p in f\n    set out to out & POSIX path of p & "\\n"\nend repeat\nout'
             result, ran = _run_osascript(script)
             if ran:

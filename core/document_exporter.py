@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Literal, Sequence
@@ -290,18 +291,51 @@ def _export_pdf_libreoffice(source: Path, pdf_dir: Path) -> Path:
     return pdfs[0]
 
 
-def _pdf_to_png(pdf_path: Path, output_dir: Path, max_pages: int) -> int:
+def _render_pdf_page_range(
+    pdf_path: Path,
+    output_dir: Path,
+    start: int,
+    stop: int,
+) -> None:
     import fitz
 
     document = fitz.open(str(pdf_path))
     try:
-        page_count = min(len(document), max_pages)
-        for index in range(page_count):
+        for index in range(start, stop):
             pixmap = document[index].get_pixmap(matrix=fitz.Matrix(2, 2))
             pixmap.save(str(output_dir / f"{index + 1}.png"))
-        return page_count
     finally:
         document.close()
+
+
+def _pdf_to_png(pdf_path: Path, output_dir: Path, max_pages: int) -> int:
+    import fitz
+
+    with fitz.open(str(pdf_path)) as document:
+        page_count = min(len(document), max_pages)
+    if page_count < 1:
+        return 0
+
+    worker_count = min(4, page_count, max(1, (os.cpu_count() or 2) - 1))
+    if worker_count == 1:
+        _render_pdf_page_range(pdf_path, output_dir, 0, page_count)
+        return page_count
+
+    chunk_size = (page_count + worker_count - 1) // worker_count
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [
+            executor.submit(
+                _render_pdf_page_range,
+                pdf_path,
+                output_dir,
+                start,
+                min(start + chunk_size, page_count),
+            )
+            for start in range(0, page_count, chunk_size)
+        ]
+        for future in futures:
+            future.result()
+    return page_count
 
 
 def convert_document(
