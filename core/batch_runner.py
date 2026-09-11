@@ -295,15 +295,7 @@ class BatchRunner(QThread):
                         pending.add(pool.submit(_process_one_image, i, img_path))
 
                     with ThreadPoolExecutor(max_workers=default_workers) as pool:
-                        # Ramp up over roughly one second. This retains the original
-                        # fast path while giving memory_pressure time to react before
-                        # all six 4K jobs allocate their peak arrays together.
-                        large_realism_frame = (
-                            realism_cache is not None
-                            and render_bg.width * render_bg.height >= 8_000_000
-                        )
-                        initial_workers = min(2, active_limit) if large_realism_frame else active_limit
-                        for _ in range(min(initial_workers, len(files))):
+                        for _ in range(min(active_limit, len(files))):
                             _submit_one(pool)
 
                         while pending or not exhausted:
@@ -331,7 +323,7 @@ class BatchRunner(QThread):
                                         )
                                 last_pressure_check = now
 
-                            if len(pending) < active_limit and not exhausted:
+                            while len(pending) < active_limit and not exhausted:
                                 _submit_one(pool)
                             if not pending:
                                 continue
