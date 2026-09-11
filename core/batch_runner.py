@@ -1,8 +1,11 @@
 import os
 import random
 import re
+import subprocess
+import sys
+import time
 from collections import Counter, deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from fractions import Fraction
 from typing import List, Optional, Tuple
 
@@ -33,21 +36,45 @@ def scaled_size_for_width(source_size: Tuple[int, int], target_width: int) -> Op
     return target_width, target_height
 
 
-def image_batch_worker_count(
-    render_size: Tuple[int, int],
-    realism_enabled: bool,
-    *,
-    cpu_count: int | None = None,
+def _image_batch_default_workers(cpu_count: int | None = None) -> int:
+    """Return the original fast-path worker count."""
+    return max(1, min(6, (cpu_count or os.cpu_count() or 2) - 1))
+
+
+def _macos_memory_free_percent() -> int | None:
+    """Read macOS system memory pressure without adding a dependency."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/memory_pressure", "-Q"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    match = re.search(r"memory free percentage:\s*(\d+)%", completed.stdout)
+    return int(match.group(1)) if match else None
+
+
+def _memory_pressure_worker_limit(
+    current_limit: int,
+    default_workers: int,
+    free_percent: int | None,
 ) -> int:
-    """Bound image concurrency by output pixels to prevent 4K memory stalls."""
-    width, height = render_size
-    pixels = max(1, int(width) * int(height))
-    cpu_limit = max(1, min(6, (cpu_count or os.cpu_count() or 2) - 1))
-    # Realism uses several float32 working arrays. Keep their combined in-flight
-    # canvas near 16 MP; the lighter plain-composite path can safely use 32 MP.
-    pixel_budget = 16_000_000 if realism_enabled else 32_000_000
-    memory_limit = max(1, pixel_budget // pixels)
-    return min(cpu_limit, memory_limit)
+    """Apply hysteresis: slow down under pressure, restore only after recovery."""
+    if free_percent is None:
+        return current_limit
+    if free_percent <= 10:
+        return 1
+    if free_percent <= 20:
+        return min(default_workers, 3)
+    if free_percent >= 30:
+        return default_workers
+    return current_limit
 
 
 def scale_points_for_size(
@@ -188,14 +215,17 @@ class BatchRunner(QThread):
                             render_bg, render_points, strength=realism_strength
                         )
 
-                    num_workers = image_batch_worker_count(
-                        render_bg.size,
-                        realism_enabled=realism_cache is not None,
+                    default_workers = _image_batch_default_workers()
+                    free_percent = _macos_memory_free_percent()
+                    active_limit = _memory_pressure_worker_limit(
+                        default_workers,
+                        default_workers,
+                        free_percent,
                     )
                     self.progress.emit(
                         done,
                         total,
-                        f"{group_name}/{template_out_name} 正在处理（并行 {num_workers}）",
+                        f"{group_name}/{template_out_name} 正在处理（并行 {active_limit}）",
                     )
 
                     def _process_one_image(i: int, img_path: str):
@@ -250,33 +280,84 @@ class BatchRunner(QThread):
 
                         return i, ext, True, ""
 
-                    futures = []
-                    with ThreadPoolExecutor(max_workers=num_workers) as pool:
-                        for i, img_path in enumerate(files, 1):
-                            if self._abort:
-                                self.finished.emit(False, "已取消"); return
-                            futures.append(pool.submit(_process_one_image, i, img_path))
+                    pending = set()
+                    indexed_files = iter(enumerate(files, 1))
+                    exhausted = False
+                    last_pressure_check = 0.0
 
-                        for fut in as_completed(futures):
-                            if self._abort:
-                                for pending in futures:
-                                    pending.cancel()
-                                self.finished.emit(False, "已取消"); return
-                            try:
-                                i, ext, ok, skip_msg = fut.result()
-                            except Exception as exc:
-                                if self._abort or str(exc) == "已取消":
-                                    for pending in futures:
-                                        pending.cancel()
-                                    self.finished.emit(False, "已取消"); return
-                                raise
+                    def _submit_one(pool) -> None:
+                        nonlocal exhausted
+                        try:
+                            i, img_path = next(indexed_files)
+                        except StopIteration:
+                            exhausted = True
+                            return
+                        pending.add(pool.submit(_process_one_image, i, img_path))
 
-                            done += 1
-                            if ok:
-                                self.progress.emit(done, total, f"{group_name}/{template_out_name}/{i}{ext}")
-                            else:
-                                skipped += 1
-                                self.progress.emit(done, total, skip_msg)
+                    with ThreadPoolExecutor(max_workers=default_workers) as pool:
+                        # Ramp up over roughly one second. This retains the original
+                        # fast path while giving memory_pressure time to react before
+                        # all six 4K jobs allocate their peak arrays together.
+                        large_realism_frame = (
+                            realism_cache is not None
+                            and render_bg.width * render_bg.height >= 8_000_000
+                        )
+                        initial_workers = min(2, active_limit) if large_realism_frame else active_limit
+                        for _ in range(min(initial_workers, len(files))):
+                            _submit_one(pool)
+
+                        while pending or not exhausted:
+                            if self._abort:
+                                for future in pending:
+                                    future.cancel()
+                                self.finished.emit(False, "已取消"); return
+
+                            now = time.monotonic()
+                            if now - last_pressure_check >= 0.5:
+                                free_percent = _macos_memory_free_percent()
+                                new_limit = _memory_pressure_worker_limit(
+                                    active_limit,
+                                    default_workers,
+                                    free_percent,
+                                )
+                                if new_limit != active_limit:
+                                    active_limit = new_limit
+                                    if free_percent is not None:
+                                        action = "临时降为" if active_limit < default_workers else "恢复"
+                                        self.progress.emit(
+                                            done,
+                                            total,
+                                            f"系统可用内存 {free_percent}%，{action} {active_limit} 路并行",
+                                        )
+                                last_pressure_check = now
+
+                            if len(pending) < active_limit and not exhausted:
+                                _submit_one(pool)
+                            if not pending:
+                                continue
+
+                            completed, _ = wait(
+                                pending,
+                                timeout=0.25,
+                                return_when=FIRST_COMPLETED,
+                            )
+                            for fut in completed:
+                                pending.remove(fut)
+                                try:
+                                    i, ext, ok, skip_msg = fut.result()
+                                except Exception as exc:
+                                    if self._abort or str(exc) == "已取消":
+                                        for future in pending:
+                                            future.cancel()
+                                        self.finished.emit(False, "已取消"); return
+                                    raise
+
+                                done += 1
+                                if ok:
+                                    self.progress.emit(done, total, f"{group_name}/{template_out_name}/{i}{ext}")
+                                else:
+                                    skipped += 1
+                                    self.progress.emit(done, total, skip_msg)
 
             if skipped:
                 self.finished.emit(
