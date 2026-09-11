@@ -33,6 +33,23 @@ def scaled_size_for_width(source_size: Tuple[int, int], target_width: int) -> Op
     return target_width, target_height
 
 
+def image_batch_worker_count(
+    render_size: Tuple[int, int],
+    realism_enabled: bool,
+    *,
+    cpu_count: int | None = None,
+) -> int:
+    """Bound image concurrency by output pixels to prevent 4K memory stalls."""
+    width, height = render_size
+    pixels = max(1, int(width) * int(height))
+    cpu_limit = max(1, min(6, (cpu_count or os.cpu_count() or 2) - 1))
+    # Realism uses several float32 working arrays. Keep their combined in-flight
+    # canvas near 16 MP; the lighter plain-composite path can safely use 32 MP.
+    pixel_budget = 16_000_000 if realism_enabled else 32_000_000
+    memory_limit = max(1, pixel_budget // pixels)
+    return min(cpu_limit, memory_limit)
+
+
 def scale_points_for_size(
     points: List[List[float]],
     source_size: Tuple[int, int],
@@ -101,8 +118,6 @@ class BatchRunner(QThread):
 
     def run(self):
         try:
-            # Match VideoRunner's worker cap: use CPU cores, but keep I/O and UI responsive.
-            num_workers = max(1, min(6, (os.cpu_count() or 2) - 1))
             os.makedirs(self.output_dir, exist_ok=True)
 
             total = sum(len(files) * len(templates) for _, files, templates in self.tasks)
@@ -172,6 +187,16 @@ class BatchRunner(QThread):
                         realism_cache = precompute_realism(
                             render_bg, render_points, strength=realism_strength
                         )
+
+                    num_workers = image_batch_worker_count(
+                        render_bg.size,
+                        realism_enabled=realism_cache is not None,
+                    )
+                    self.progress.emit(
+                        done,
+                        total,
+                        f"{group_name}/{template_out_name} 正在处理（并行 {num_workers}）",
+                    )
 
                     def _process_one_image(i: int, img_path: str):
                         if self._abort:
