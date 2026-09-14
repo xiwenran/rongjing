@@ -151,205 +151,274 @@ class BatchRunner(QThread):
             done = 0
             skipped = 0
 
+            # Group all work by template so its 4K mask/background/realism cache is
+            # built once for the whole batch instead of once per source folder.
+            template_jobs = {}
             for (group_name, files, templates), source_output_dir in zip(
                 self.tasks, self.output_dirs
             ):
                 files = [path for path in files if is_valid_input_file(path, "image")]
                 output_name_counts = Counter(t.name for t in templates)
                 for template in templates:
-                    if self._abort:
-                        self.finished.emit(False, "已取消"); return
-
                     template_out_name = template.name
                     if output_name_counts[template.name] > 1:
                         category = getattr(template, "category", "模板") or "模板"
                         template_out_name = f"{category}-{template.name}"
+                    key = self._template_runtime_key(template)
+                    if key not in template_jobs:
+                        template_jobs[key] = [template, []]
+                    template_jobs[key][1].append(
+                        (group_name, files, source_output_dir, template_out_name)
+                    )
+
+            for template, source_jobs in template_jobs.values():
+                if self._abort:
+                    self.finished.emit(False, "已取消"); return
+
+                work_items = []
+                for group_name, files, source_output_dir, template_out_name in source_jobs:
                     out_sub = os.path.join(source_output_dir, template_out_name)
                     os.makedirs(out_sub, exist_ok=True)
-
-                    # 0 = use template/background size. Otherwise keep aspect ratio at target width.
-                    template_output_size = (
-                        (template.output_width, template.output_height)
-                        if template.output_width > 0 else None
+                    work_items.extend(
+                        (group_name, template_out_name, out_sub, i, img_path)
+                        for i, img_path in enumerate(files, 1)
                     )
+                if not work_items:
+                    continue
 
-                    # Precompute mask + bg array once per template (shared across all files)
-                    ppt_size = self._first_readable_image_size(files)
-                    if ppt_size is None:
-                        skipped += len(files)
-                        done += len(files)
-                        self.progress.emit(done, total, f"{group_name}/{template_out_name} 没有可识别的图片")
-                        continue
-                    with Image.open(template.background_path) as bg_img:
-                        bg_size = bg_img.size
-                        render_size = template_output_size
-                        if self.output_width > 0:
-                            render_size = scaled_size_for_width(
-                                render_size or bg_size,
-                                self.output_width,
-                            )
-                        if render_size:
-                            render_bg = bg_img.convert("RGB").resize(render_size, Image.LANCZOS)
-                            render_points = scale_points_for_size(
-                                template.screen_points,
-                                bg_size,
-                                render_size,
-                            )
-                        else:
-                            render_bg = bg_img
-                            render_points = template.screen_points
-                        render_bg = render_bg.convert("RGB")
-                        render_type = getattr(template, "template_type", "screen") or "screen"
-                        if render_type != "document_paper":
-                            render_type = "screen"
-                        cache = None
-                        if render_type == "screen":
-                            cache = precompute_template_cache(
-                                render_bg, render_points, ppt_size=ppt_size
-                            )
-                        else:
-                            render_bg = render_bg.copy()
-
-                        realism_strength = self.realism_strength if self.realism_enabled else 0
-                        realism_cache = precompute_realism(
-                            render_bg, render_points, strength=realism_strength
-                        )
-
-                    default_workers = _image_batch_default_workers()
-                    free_percent = _macos_memory_free_percent()
-                    active_limit = _memory_pressure_worker_limit(
-                        default_workers,
-                        default_workers,
-                        free_percent,
-                    )
+                ppt_size = self._first_readable_image_size(
+                    [item[4] for item in work_items]
+                )
+                if ppt_size is None:
+                    skipped += len(work_items)
+                    done += len(work_items)
                     self.progress.emit(
                         done,
                         total,
-                        f"{group_name}/{template_out_name} 正在处理（并行 {active_limit}）",
+                        f"{template.name} 没有可识别的图片",
+                    )
+                    continue
+
+                self.progress.emit(done, total, f"{template.name} 正在准备模板缓存")
+                template_output_size = (
+                    (template.output_width, template.output_height)
+                    if template.output_width > 0 else None
+                )
+                with Image.open(template.background_path) as bg_img:
+                    bg_size = bg_img.size
+                    render_size = template_output_size
+                    if self.output_width > 0:
+                        render_size = scaled_size_for_width(
+                            render_size or bg_size,
+                            self.output_width,
+                        )
+                    if render_size:
+                        render_bg = bg_img.convert("RGB").resize(
+                            render_size, Image.LANCZOS
+                        )
+                        render_points = scale_points_for_size(
+                            template.screen_points,
+                            bg_size,
+                            render_size,
+                        )
+                    else:
+                        render_bg = bg_img
+                        render_points = template.screen_points
+                    render_bg = render_bg.convert("RGB")
+                    render_type = (
+                        getattr(template, "template_type", "screen") or "screen"
+                    )
+                    if render_type != "document_paper":
+                        render_type = "screen"
+                    cache = None
+                    if render_type == "screen":
+                        cache = precompute_template_cache(
+                            render_bg,
+                            render_points,
+                            ppt_size=ppt_size,
+                        )
+                    else:
+                        render_bg = render_bg.copy()
+                    realism_strength = (
+                        self.realism_strength if self.realism_enabled else 0
+                    )
+                    realism_cache = precompute_realism(
+                        render_bg,
+                        render_points,
+                        strength=realism_strength,
                     )
 
-                    def _process_one_image(i: int, img_path: str):
-                        if self._abort:
-                            raise RuntimeError("已取消")
+                default_workers = _image_batch_default_workers()
+                free_percent = _macos_memory_free_percent()
+                active_limit = _memory_pressure_worker_limit(
+                    default_workers,
+                    default_workers,
+                    free_percent,
+                )
+                self.progress.emit(
+                    done,
+                    total,
+                    f"{template.name} 正在处理全部图片组（并行 {active_limit}）",
+                )
 
-                        ext = ".jpg" if self.output_format == "JPEG" else ".png"
-                        out_path = os.path.join(out_sub, f"{i}{ext}")
-
-                        try:
-                            with Image.open(img_path) as ppt_img:
-                                if render_type == "document_paper":
-                                    result = embed_document_paper_pil(
-                                        ppt_img,
-                                        render_bg.copy(),
-                                        render_points,
-                                        render_preset=getattr(template, "render_preset", "clear"),
-                                    )
-                                else:
-                                    result = embed_image_pil_fast(ppt_img, cache)
-                        except (UnidentifiedImageError, OSError) as exc:
-                            return i, ext, False, f"跳过无法识别的图片 {os.path.basename(img_path)}：{exc}"
-
-                        result = apply_realism(result, realism_cache)
-
-                        if self._abort:
-                            raise RuntimeError("已取消")
-
-                        seed = None
-                        if self.diversify_config is not None and getattr(self.diversify_config, "enabled", False):
-                            from core.diversifier import diversify_image
-
-                            seed = hash((self._diversify_run_seed, template.name, group_name, i))
-                            result = diversify_image(result, self.diversify_config, seed=seed)
-
-                        if self._abort:
-                            raise RuntimeError("已取消")
-
-                        if self.output_format == "JPEG":
-                            quality = 95
-                            if seed is not None:
-                                from core.diversifier import randomize_jpeg_quality
-
-                                quality = randomize_jpeg_quality(
-                                    95,
-                                    self.diversify_config.jpeg_quality_range,
-                                    random.Random(seed),
+                def _process_one_image(item):
+                    group_name, template_out_name, out_sub, i, img_path = item
+                    if self._abort:
+                        raise RuntimeError("已取消")
+                    ext = ".jpg" if self.output_format == "JPEG" else ".png"
+                    out_path = os.path.join(out_sub, f"{i}{ext}")
+                    try:
+                        with Image.open(img_path) as ppt_img:
+                            if render_type == "document_paper":
+                                result = embed_document_paper_pil(
+                                    ppt_img,
+                                    render_bg.copy(),
+                                    render_points,
+                                    render_preset=getattr(
+                                        template, "render_preset", "clear"
+                                    ),
                                 )
-                            result.convert("RGB").save(out_path, "JPEG", quality=quality)
-                        else:
-                            result.save(out_path, "PNG")
+                            else:
+                                result = embed_image_pil_fast(ppt_img, cache)
+                    except (UnidentifiedImageError, OSError) as exc:
+                        return (
+                            group_name,
+                            template_out_name,
+                            i,
+                            ext,
+                            False,
+                            f"跳过无法识别的图片 {os.path.basename(img_path)}：{exc}",
+                        )
 
-                        return i, ext, True, ""
+                    result = apply_realism(result, realism_cache)
+                    if self._abort:
+                        raise RuntimeError("已取消")
 
-                    pending = set()
-                    indexed_files = iter(enumerate(files, 1))
-                    exhausted = False
-                    last_pressure_check = 0.0
+                    seed = None
+                    if self.diversify_config is not None and getattr(
+                        self.diversify_config, "enabled", False
+                    ):
+                        from core.diversifier import diversify_image
 
-                    def _submit_one(pool) -> None:
-                        nonlocal exhausted
-                        try:
-                            i, img_path = next(indexed_files)
-                        except StopIteration:
-                            exhausted = True
-                            return
-                        pending.add(pool.submit(_process_one_image, i, img_path))
+                        seed = hash((
+                            self._diversify_run_seed,
+                            template.name,
+                            group_name,
+                            i,
+                        ))
+                        result = diversify_image(
+                            result,
+                            self.diversify_config,
+                            seed=seed,
+                        )
+                    if self._abort:
+                        raise RuntimeError("已取消")
 
-                    with ThreadPoolExecutor(max_workers=default_workers) as pool:
-                        for _ in range(min(active_limit, len(files))):
-                            _submit_one(pool)
+                    if self.output_format == "JPEG":
+                        quality = 95
+                        if seed is not None:
+                            from core.diversifier import randomize_jpeg_quality
 
-                        while pending or not exhausted:
-                            if self._abort:
-                                for future in pending:
-                                    future.cancel()
-                                self.finished.emit(False, "已取消"); return
-
-                            now = time.monotonic()
-                            if now - last_pressure_check >= 0.5:
-                                free_percent = _macos_memory_free_percent()
-                                new_limit = _memory_pressure_worker_limit(
-                                    active_limit,
-                                    default_workers,
-                                    free_percent,
-                                )
-                                if new_limit != active_limit:
-                                    active_limit = new_limit
-                                    if free_percent is not None:
-                                        action = "临时降为" if active_limit < default_workers else "恢复"
-                                        self.progress.emit(
-                                            done,
-                                            total,
-                                            f"系统可用内存 {free_percent}%，{action} {active_limit} 路并行",
-                                        )
-                                last_pressure_check = now
-
-                            while len(pending) < active_limit and not exhausted:
-                                _submit_one(pool)
-                            if not pending:
-                                continue
-
-                            completed, _ = wait(
-                                pending,
-                                timeout=0.25,
-                                return_when=FIRST_COMPLETED,
+                            quality = randomize_jpeg_quality(
+                                95,
+                                self.diversify_config.jpeg_quality_range,
+                                random.Random(seed),
                             )
-                            for fut in completed:
-                                pending.remove(fut)
-                                try:
-                                    i, ext, ok, skip_msg = fut.result()
-                                except Exception as exc:
-                                    if self._abort or str(exc) == "已取消":
-                                        for future in pending:
-                                            future.cancel()
-                                        self.finished.emit(False, "已取消"); return
-                                    raise
+                        result.convert("RGB").save(
+                            out_path,
+                            "JPEG",
+                            quality=quality,
+                        )
+                    else:
+                        result.save(out_path, "PNG")
+                    return group_name, template_out_name, i, ext, True, ""
 
-                                done += 1
-                                if ok:
-                                    self.progress.emit(done, total, f"{group_name}/{template_out_name}/{i}{ext}")
-                                else:
-                                    skipped += 1
-                                    self.progress.emit(done, total, skip_msg)
+                pending = set()
+                work_iter = iter(work_items)
+                exhausted = False
+                last_pressure_check = 0.0
+
+                def _submit_one(pool) -> None:
+                    nonlocal exhausted
+                    try:
+                        item = next(work_iter)
+                    except StopIteration:
+                        exhausted = True
+                        return
+                    pending.add(pool.submit(_process_one_image, item))
+
+                with ThreadPoolExecutor(max_workers=default_workers) as pool:
+                    for _ in range(min(active_limit, len(work_items))):
+                        _submit_one(pool)
+
+                    while pending or not exhausted:
+                        if self._abort:
+                            for future in pending:
+                                future.cancel()
+                            self.finished.emit(False, "已取消"); return
+
+                        now = time.monotonic()
+                        if now - last_pressure_check >= 0.5:
+                            free_percent = _macos_memory_free_percent()
+                            new_limit = _memory_pressure_worker_limit(
+                                active_limit,
+                                default_workers,
+                                free_percent,
+                            )
+                            if new_limit != active_limit:
+                                active_limit = new_limit
+                                if free_percent is not None:
+                                    action = (
+                                        "临时降为"
+                                        if active_limit < default_workers
+                                        else "恢复"
+                                    )
+                                    self.progress.emit(
+                                        done,
+                                        total,
+                                        f"系统可用内存 {free_percent}%，"
+                                        f"{action} {active_limit} 路并行",
+                                    )
+                            last_pressure_check = now
+
+                        while len(pending) < active_limit and not exhausted:
+                            _submit_one(pool)
+                        if not pending:
+                            continue
+
+                        completed, _ = wait(
+                            pending,
+                            timeout=0.25,
+                            return_when=FIRST_COMPLETED,
+                        )
+                        for fut in completed:
+                            pending.remove(fut)
+                            try:
+                                (
+                                    group_name,
+                                    template_out_name,
+                                    i,
+                                    ext,
+                                    ok,
+                                    skip_msg,
+                                ) = fut.result()
+                            except Exception as exc:
+                                if self._abort or str(exc) == "已取消":
+                                    for future in pending:
+                                        future.cancel()
+                                    self.finished.emit(False, "已取消"); return
+                                raise
+
+                            done += 1
+                            if ok:
+                                self.progress.emit(
+                                    done,
+                                    total,
+                                    f"{group_name}/{template_out_name}/{i}{ext}",
+                                )
+                            else:
+                                skipped += 1
+                                self.progress.emit(done, total, skip_msg)
 
             if skipped:
                 self.finished.emit(
@@ -382,6 +451,20 @@ class BatchRunner(QThread):
         if group_name in {"(根目录)", "图片批量"} and files:
             return os.path.basename(os.path.normpath(os.path.dirname(files[0]))) or group_name
         return group_name
+
+    @staticmethod
+    def _template_runtime_key(template: Template) -> tuple:
+        return (
+            getattr(template, "storage_key", "") or "",
+            os.path.abspath(template.background_path),
+            template.name,
+            getattr(template, "category", "") or "",
+            getattr(template, "template_type", "screen") or "screen",
+            getattr(template, "render_preset", "clear") or "clear",
+            int(template.output_width),
+            int(template.output_height),
+            tuple(tuple(float(value) for value in point) for point in template.screen_points),
+        )
 
 
 class VideoRunner(QThread):
