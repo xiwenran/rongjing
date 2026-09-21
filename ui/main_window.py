@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QComboBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QProgressBar, QFormLayout, QSpinBox, QDoubleSpinBox,
     QAbstractItemView, QFrame, QScrollArea, QDialog, QCheckBox, QDialogButtonBox,
-    QSizePolicy, QMenu, QWidgetAction,
+    QSizePolicy, QMenu, QWidgetAction, QListView, QTreeView,
 )
 from PyQt6.QtCore import Qt, QSize, QSettings, QPoint
 from PyQt6.QtGui import QFont, QColor
@@ -358,6 +358,34 @@ def pick_folder(parent, title="选择文件夹", default_dir="") -> str:
             return path.rstrip("/") if path else ""
     opts = QFileDialog.Option.DontUseNativeDialog if sys.platform == "darwin" else QFileDialog.Option(0)
     return QFileDialog.getExistingDirectory(parent, title, default_dir, opts)
+
+
+def pick_folders_qt(parent, title="选择文件夹（可多选）", default_dir="") -> list[str]:
+    """Use Qt's non-native dialog to select one or more directories."""
+    dialog = QFileDialog(parent, title, default_dir)
+    dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+    dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+    dialog.setFileMode(QFileDialog.FileMode.Directory)
+    dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+
+    # QFileDialog does not expose a multi-directory mode directly. Its
+    # non-native list/tree views do, and selectedFiles() returns those folders.
+    for view_name, view_type in (("listView", QListView), ("treeView", QTreeView)):
+        view = dialog.findChild(view_type, view_name)
+        if view is not None:
+            view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+        return []
+
+    paths = []
+    seen = set()
+    for selected in dialog.selectedFiles():
+        path = os.path.normpath(selected)
+        if os.path.isdir(path) and path not in seen:
+            seen.add(path)
+            paths.append(path)
+    return paths
 
 
 # ── Layout helpers ────────────────────────────────────────────────────────────
@@ -2396,24 +2424,23 @@ class MainWindow(QMainWindow):
             self._populate_video_table(paths)
 
     def _pick_page_image_folder(self):
-        if sys.platform == "darwin":
-            loc = (
-                f' default location (POSIX file "{self._last_dir_videos}")'
-                if self._last_dir_videos and os.path.isdir(self._last_dir_videos)
-                else ""
+        try:
+            paths = pick_folders_qt(
+                self,
+                "选择页面图片文件夹（可多选）",
+                self._last_dir_videos,
             )
-            script = f'set f to (choose folder with prompt "选择页面图片文件夹（可多选）"{loc} with multiple selections allowed)\nset out to ""\nrepeat with p in f\n    set out to out & POSIX path of p & "\\n"\nend repeat\nout'
-            result, ran = _run_osascript(script)
-            if ran:
-                paths = [p.rstrip("/") for p in result.strip().split("\n") if p]
-                if paths:
-                    self._save_dir("videos", os.path.commonpath(paths))
-                    self._populate_video_table(paths)
-                return
-        path = pick_folder(self, "选择页面图片文件夹", self._last_dir_videos)
-        if path:
-            self._save_dir("videos", path)
-            self._populate_video_table([path])
+        except Exception as exc:
+            QMessageBox.critical(self, "选择文件夹失败", f"无法打开文件夹选择窗口：{exc}")
+            return
+        if not paths:
+            return
+
+        try:
+            self._populate_video_table(paths)
+            self._save_dir("videos", os.path.commonpath(paths))
+        except Exception as exc:
+            QMessageBox.critical(self, "导入失败", f"无法导入页面图片文件夹：{exc}")
 
     def _populate_video_table(self, paths: list):
         try:
