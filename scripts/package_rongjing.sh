@@ -40,6 +40,7 @@ echo "  构建标识: $BUILD"
 pyinstaller \
   --windowed \
   --name "$APP_NAME" \
+  --osx-bundle-identifier "com.xili.rongjing" \
   --hidden-import "PIL._tkinter_finder" \
   --hidden-import "av" \
   --hidden-import "numpy" \

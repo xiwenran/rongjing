@@ -322,6 +322,7 @@ _RED   = "#FA5151"   # 危险色
 42. **音乐库与页面视频配乐**：音乐库固定在 App Data 的 `融景/music/`，视频导入仅保存首条音轨，所有导入按 SHA-256 去重。页面视频支持不配乐、固定和随机，默认音量 35%，从音频第 0 秒开始，短音频每轮同曲从第 0 秒循环并编码为 48 kHz 双声道 AAC；随机实际曲目写入完成回执。真实视频保持原声；翻页预览视频含 BGM，但弹窗当前不播放声音。M1/M2/M3 见 `7d3ebc2`、`00103fe`、`96ccba6`，独立审查 PASS WITH RISKS；AAC 尾垫与未持久 sidecar 为非阻断风险，真机听感、长音频和冻结 App 未验证。
 43. **页面视频清晰度与零秒配乐**：正式页面视频复用批量图片的 `0`/1920/2560/3840 分辨率规则，预览固定 960，真实视频不套用；背景只在尺寸变化时用 LANCZOS 缩放。VideoToolbox 码率限制为 8–20 Mbps，libx264 使用 CRF 17。BGM 从源音频第 0 秒开始，每轮循环也回到第 0 秒。修复见 `9a6889d`；短样本 1920×1440 / 1024×768，编码前后 ROI 边缘能量 9.710 / 9.887，前 200 ms RMS 0.0963、源相关 0.9998；真机文字观感和冻结 App 未验证。
 44. **页面图片文件夹选择器必须走 Qt 原生目录面板**：macOS 27.0 / Qt 6.10.2 下，传 `DontUseNativeDialog` 的 Qt 非原生目录窗口在退出前会触发系统级 `Invalid view geometry: width/height is negative` 致命错误。页面序列的文件夹入口直接调用 `QFileDialog.getExistingDirectory` 且不传该选项，让 Qt 使用系统 `NSOpenPanel`；该入口只选一个目录，父目录内的子目录仍由 `group_page_image_sources` 拆分为多组。
+45. **正式 macOS App 必须使用有效的 ASCII 反向域名 bundle id**：打包命令固定传入 `--osx-bundle-identifier "com.xili.rongjing"`，不能沿用中文 App 名作为 `CFBundleIdentifier`。当前系统日志已显示旧包为 `identifier(null)` / `not properly entitled`，会影响系统服务正确识别 App 身份。
 
 ---
 
