@@ -1233,7 +1233,11 @@ class MainWindow(QMainWindow):
         vh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         vh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.video_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.video_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        if sys.platform == "darwin":
+            self.video_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+            self.video_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        else:
+            self.video_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.video_table.verticalHeader().setVisible(False)
         self.video_table.setMinimumHeight(200)
         _set_green_selection(self.video_table)
