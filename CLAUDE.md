@@ -323,7 +323,7 @@ _RED   = "#FA5151"   # 危险色
 43. **页面视频清晰度与零秒配乐**：正式页面视频复用批量图片的 `0`/1920/2560/3840 分辨率规则，预览固定 960，真实视频不套用；背景只在尺寸变化时用 LANCZOS 缩放。VideoToolbox 码率限制为 8–20 Mbps，libx264 使用 CRF 17。BGM 从源音频第 0 秒开始，每轮循环也回到第 0 秒。修复见 `9a6889d`；短样本 1920×1440 / 1024×768，编码前后 ROI 边缘能量 9.710 / 9.887，前 200 ms RMS 0.0963、源相关 0.9998；真机文字观感和冻结 App 未验证。
 44. **页面图片文件夹选择器现行使用 Qt 原生单目录面板**：页面序列的文件夹入口直接调用 `QFileDialog.getExistingDirectory` 且不传 `DontUseNativeDialog`，由系统 `NSOpenPanel` 选择一个目录；父目录内的子目录仍由 `group_page_image_sources` 拆分为多组。系统日志曾出现 `Invalid view geometry: width/height is negative`，但没有直接证据证明该日志是本次退出的致命原因，不再据此归因。
 45. **正式 macOS App 使用固定的 ASCII 反向域名 bundle id**：打包命令固定传入 `--osx-bundle-identifier "com.xili.rongjing"`，避免中文 App 名落成无效 `CFBundleIdentifier`。`identifier(null)` / `not properly entitled` 日志能说明旧包身份配置异常，但没有证明它是本次页面视频入口崩溃的原因。
-46. **局部 Fusion style 必须建立 QObject parent**：`QWidget.setStyle()` 不接管 style 所有权；`_set_green_selection` 创建的 Fusion style 同时用于表格和 viewport 时，必须调用 `fusion.setParent(table_widget)`。同一真实 GUI、真实数据、可见批量页和页面视频模式 A/B 中，无 parent 的原逻辑在 populate 后稳定 `exit 139`，只增加 parent 且不保留全局引用则 `exit 0`。弱引用与 `sip.isdeleted` 显示崩溃前 Python wrapper 仍存活，不能把根因表述为「已被 GC」；当前证据支持 style 所有权或释放顺序问题。源码路径已验证，修复后的冻结 App 尚未验收。
+46. **表格复用应用级 Fusion style，不创建局部 QStyle**：`main.py` 已为 QApplication 设置 Fusion，`_set_green_selection` 只需设置表格和 viewport 的选中色 palette。仅给局部 Fusion style 建立 parent 的源码测试可通过，但冻结 harness 仍出现 `exit 139`，不能视为充分修复；完全移除局部 `QStyleFactory.create` / `setStyle` 的 palette-only 冻结 harness 已连续三次通过重复导入与模式切换测试，正式候选仍待真机验收。弱引用与 `sip.isdeleted` 未证明 Python wrapper 已被 GC，不把根因表述为「已被 GC」。
 
 ---
 

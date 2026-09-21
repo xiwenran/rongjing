@@ -549,15 +549,8 @@ class SlowScrollArea(QScrollArea):
 
 
 def _set_green_selection(table_widget):
-    """Force green selection by switching table to Fusion style (bypasses macOS Aqua blue)."""
-    from PyQt6.QtWidgets import QStyleFactory
+    """Set green selection while reusing the application-level Fusion style."""
     from PyQt6.QtGui import QPalette
-    fusion = QStyleFactory.create("Fusion")
-    if fusion:
-        # QWidget.setStyle() does not take ownership; keep the shared style alive with the table.
-        fusion.setParent(table_widget)
-        table_widget.setStyle(fusion)
-        table_widget.viewport().setStyle(fusion)
     green = QColor(7, 193, 96, 100)
     text  = QColor(25, 25, 25)
     for w in (table_widget, table_widget.viewport()):
