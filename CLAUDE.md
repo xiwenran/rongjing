@@ -193,6 +193,7 @@ _RED   = "#FA5151"   # 危险色
 ### macOS 文件选择
 - 优先用 `osascript` 打开原生 Finder 选择器（支持 `default location`）
 - 失败则回退 `QFileDialog`
+- 页面序列的「选择页面图片文件夹」入口直接使用原生 `QFileDialog.getExistingDirectory` 单选目录；选父目录后仍由 `group_page_image_sources` 按子目录拆成多组
 
 ### 现行扩展入口
 - 独立「资料导出」页面与 CLI `export-material` 负责 PPT/Word 转 PNG，并严格按所选资料类型扫描
@@ -320,6 +321,7 @@ _RED   = "#FA5151"   # 危险色
 41. **PowerPoint 固定授权中转**：macOS PowerPoint 只在 `~/Documents/融景Office中转/` 复制副本、打开文件并接收 PDF，不移动原件。正常结束按 manifest 精确清理本批副本/PDF，启动时清理严格超过 24 小时的崩溃残留；固定根设为 `0700`，全过程使用 no-follow、`dir_fd`、quarantine、inode + size，复制另核对 SHA-256 + size。功能见 `251d024`，安全加固见 `115bdf6`，源文件快照修复见 `3b31ad1`；独立阻断项窄复核 CLOSED，授权持久性、PowerPoint 真机和冻结 App 由用户验证。LibreOffice 流程不变。
 42. **音乐库与页面视频配乐**：音乐库固定在 App Data 的 `融景/music/`，视频导入仅保存首条音轨，所有导入按 SHA-256 去重。页面视频支持不配乐、固定和随机，默认音量 35%，从音频第 0 秒开始，短音频每轮同曲从第 0 秒循环并编码为 48 kHz 双声道 AAC；随机实际曲目写入完成回执。真实视频保持原声；翻页预览视频含 BGM，但弹窗当前不播放声音。M1/M2/M3 见 `7d3ebc2`、`00103fe`、`96ccba6`，独立审查 PASS WITH RISKS；AAC 尾垫与未持久 sidecar 为非阻断风险，真机听感、长音频和冻结 App 未验证。
 43. **页面视频清晰度与零秒配乐**：正式页面视频复用批量图片的 `0`/1920/2560/3840 分辨率规则，预览固定 960，真实视频不套用；背景只在尺寸变化时用 LANCZOS 缩放。VideoToolbox 码率限制为 8–20 Mbps，libx264 使用 CRF 17。BGM 从源音频第 0 秒开始，每轮循环也回到第 0 秒。修复见 `9a6889d`；短样本 1920×1440 / 1024×768，编码前后 ROI 边缘能量 9.710 / 9.887，前 200 ms RMS 0.0963、源相关 0.9998；真机文字观感和冻结 App 未验证。
+44. **页面图片文件夹选择器必须走 Qt 原生目录面板**：macOS 27.0 / Qt 6.10.2 下，传 `DontUseNativeDialog` 的 Qt 非原生目录窗口在退出前会触发系统级 `Invalid view geometry: width/height is negative` 致命错误。页面序列的文件夹入口直接调用 `QFileDialog.getExistingDirectory` 且不传该选项，让 Qt 使用系统 `NSOpenPanel`；该入口只选一个目录，父目录内的子目录仍由 `group_page_image_sources` 拆分为多组。
 
 ---
 
