@@ -554,6 +554,8 @@ def _set_green_selection(table_widget):
     from PyQt6.QtGui import QPalette
     fusion = QStyleFactory.create("Fusion")
     if fusion:
+        # QWidget.setStyle() does not take ownership; keep the shared style alive with the table.
+        fusion.setParent(table_widget)
         table_widget.setStyle(fusion)
         table_widget.viewport().setStyle(fusion)
     green = QColor(7, 193, 96, 100)

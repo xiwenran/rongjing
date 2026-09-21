@@ -321,8 +321,9 @@ _RED   = "#FA5151"   # 危险色
 41. **PowerPoint 固定授权中转**：macOS PowerPoint 只在 `~/Documents/融景Office中转/` 复制副本、打开文件并接收 PDF，不移动原件。正常结束按 manifest 精确清理本批副本/PDF，启动时清理严格超过 24 小时的崩溃残留；固定根设为 `0700`，全过程使用 no-follow、`dir_fd`、quarantine、inode + size，复制另核对 SHA-256 + size。功能见 `251d024`，安全加固见 `115bdf6`，源文件快照修复见 `3b31ad1`；独立阻断项窄复核 CLOSED，授权持久性、PowerPoint 真机和冻结 App 由用户验证。LibreOffice 流程不变。
 42. **音乐库与页面视频配乐**：音乐库固定在 App Data 的 `融景/music/`，视频导入仅保存首条音轨，所有导入按 SHA-256 去重。页面视频支持不配乐、固定和随机，默认音量 35%，从音频第 0 秒开始，短音频每轮同曲从第 0 秒循环并编码为 48 kHz 双声道 AAC；随机实际曲目写入完成回执。真实视频保持原声；翻页预览视频含 BGM，但弹窗当前不播放声音。M1/M2/M3 见 `7d3ebc2`、`00103fe`、`96ccba6`，独立审查 PASS WITH RISKS；AAC 尾垫与未持久 sidecar 为非阻断风险，真机听感、长音频和冻结 App 未验证。
 43. **页面视频清晰度与零秒配乐**：正式页面视频复用批量图片的 `0`/1920/2560/3840 分辨率规则，预览固定 960，真实视频不套用；背景只在尺寸变化时用 LANCZOS 缩放。VideoToolbox 码率限制为 8–20 Mbps，libx264 使用 CRF 17。BGM 从源音频第 0 秒开始，每轮循环也回到第 0 秒。修复见 `9a6889d`；短样本 1920×1440 / 1024×768，编码前后 ROI 边缘能量 9.710 / 9.887，前 200 ms RMS 0.0963、源相关 0.9998；真机文字观感和冻结 App 未验证。
-44. **页面图片文件夹选择器必须走 Qt 原生目录面板**：macOS 27.0 / Qt 6.10.2 下，传 `DontUseNativeDialog` 的 Qt 非原生目录窗口在退出前会触发系统级 `Invalid view geometry: width/height is negative` 致命错误。页面序列的文件夹入口直接调用 `QFileDialog.getExistingDirectory` 且不传该选项，让 Qt 使用系统 `NSOpenPanel`；该入口只选一个目录，父目录内的子目录仍由 `group_page_image_sources` 拆分为多组。
-45. **正式 macOS App 必须使用有效的 ASCII 反向域名 bundle id**：打包命令固定传入 `--osx-bundle-identifier "com.xili.rongjing"`，不能沿用中文 App 名作为 `CFBundleIdentifier`。当前系统日志已显示旧包为 `identifier(null)` / `not properly entitled`，会影响系统服务正确识别 App 身份。
+44. **页面图片文件夹选择器现行使用 Qt 原生单目录面板**：页面序列的文件夹入口直接调用 `QFileDialog.getExistingDirectory` 且不传 `DontUseNativeDialog`，由系统 `NSOpenPanel` 选择一个目录；父目录内的子目录仍由 `group_page_image_sources` 拆分为多组。系统日志曾出现 `Invalid view geometry: width/height is negative`，但没有直接证据证明该日志是本次退出的致命原因，不再据此归因。
+45. **正式 macOS App 使用固定的 ASCII 反向域名 bundle id**：打包命令固定传入 `--osx-bundle-identifier "com.xili.rongjing"`，避免中文 App 名落成无效 `CFBundleIdentifier`。`identifier(null)` / `not properly entitled` 日志能说明旧包身份配置异常，但没有证明它是本次页面视频入口崩溃的原因。
+46. **局部 Fusion style 必须建立 QObject parent**：`QWidget.setStyle()` 不接管 style 所有权；`_set_green_selection` 创建的 Fusion style 同时用于表格和 viewport 时，必须调用 `fusion.setParent(table_widget)`。同一真实 GUI、真实数据、可见批量页和页面视频模式 A/B 中，无 parent 的原逻辑在 populate 后稳定 `exit 139`，只增加 parent 且不保留全局引用则 `exit 0`。弱引用与 `sip.isdeleted` 显示崩溃前 Python wrapper 仍存活，不能把根因表述为「已被 GC」；当前证据支持 style 所有权或释放顺序问题。源码路径已验证，修复后的冻结 App 尚未验收。
 
 ---
 
