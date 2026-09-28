@@ -272,7 +272,7 @@ _RED   = "#FA5151"   # 危险色
 - [x] 音乐库与页面视频配乐：App Data 固定音乐库、音频/文件夹/视频首音轨导入、SHA-256 去重；页面视频不配乐/固定/随机、35% 默认音量、零秒起播、同曲从零秒循环与 48 kHz 双声道 AAC，完成回执记录随机实际曲目
 - [x] 页面视频清晰度：正式导出复用 `0`/1920/2560/3840 分辨率规则，预览固定 960，真实视频不套用；LANCZOS 缩放且同尺寸不 resize，VideoToolbox 8–20 Mbps，libx264 CRF 17
 - [x] `material-exporter` 与 `ppt-notes-pipeline` 现役 Skill 归融景维护，旧 `ppt-batch-tool` 项目暂停维护
-- [x] 应用图标资源接入：确认样张原样保存为 `resources/icons/rongjing.png`，派生 ICNS/ICO；源码窗口图标与 Mac/Windows 打包入口均使用该资源。冻结包与本机安装效果待验证。
+- [x] 应用图标资源接入：确认样张原样保存为 `resources/icons/rongjing.png`，派生 ICNS/ICO；源码窗口图标与 Mac/Windows 打包入口均使用该资源。Mac 冻结 App 的图标资源、构建标识与离屏启动已验证；本机安装效果未验证，DMG 生成失败。
 
 ---
 
