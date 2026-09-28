@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('_build_info.py', '.')]
+datas = [('_build_info.py', '.'), ('resources/icons/rongjing.png', 'resources/icons')]
 binaries = []
 hiddenimports = ['PIL._tkinter_finder', 'av', 'numpy', 'cv2']
 hiddenimports += collect_submodules('openai')
@@ -54,6 +54,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='融景.app',
-    icon=None,
+    icon='resources/icons/rongjing.icns',
     bundle_identifier=None,
 )

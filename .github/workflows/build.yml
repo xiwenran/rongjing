@@ -39,8 +39,10 @@ jobs:
           pyinstaller `
             --windowed `
             --name "融景" `
+            --icon "resources/icons/rongjing.ico" `
             --add-data "templates;templates" `
             --add-data "_build_info.py;." `
+            --add-data "resources/icons/rongjing.png;resources/icons" `
             --hidden-import "PIL._tkinter_finder" `
             --hidden-import "av" `
             --hidden-import "comtypes.client" `

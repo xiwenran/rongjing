@@ -40,6 +40,7 @@ echo "  构建标识: $BUILD"
 pyinstaller \
   --windowed \
   --name "$APP_NAME" \
+  --icon "resources/icons/rongjing.icns" \
   --osx-bundle-identifier "com.xili.rongjing" \
   --hidden-import "PIL._tkinter_finder" \
   --hidden-import "av" \
@@ -49,6 +50,7 @@ pyinstaller \
   --collect-submodules "openai" \
   --noconfirm \
   --add-data "_build_info.py:." \
+  --add-data "resources/icons/rongjing.png:resources/icons" \
   --add-binary "$PAGE_CURL_HELPER:helpers/page_curl" \
   main.py
 

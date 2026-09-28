@@ -8,10 +8,16 @@ if not getattr(sys, "frozen", False):
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 from ui.main_window import MainWindow
 
 APP_NAME = "融景"
+
+
+def get_app_icon_path() -> str:
+    """返回源码目录或 PyInstaller 资源目录中的应用图标。"""
+    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_dir, "resources", "icons", "rongjing.png")
 
 try:
     from _build_info import BUILD
@@ -48,6 +54,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    app.setWindowIcon(QIcon(get_app_icon_path()))
     app.setStyle("Fusion")
     f = app.font(); f.setPointSize(13); app.setFont(f)
 

@@ -268,6 +268,7 @@ _RED   = "#FA5151"   # 危险色
 - [x] 页面视频清晰度：正式导出复用 `0`/1920/2560/3840 分辨率规则，预览固定 960，真实视频不套用；LANCZOS 缩放且同尺寸不 resize，VideoToolbox 8–20 Mbps，libx264 CRF 17
 - [x] `material-exporter` 与 `ppt-notes-pipeline` 现役 Skill 归融景维护，旧 `ppt-batch-tool` 项目暂停维护
 - [x] 运行数据目录新增 6 个 AI 生成的「笔记本室内」暗调倾斜场景模板，key 为 `20260909-laptop-indoor-dark-01` 至 `20260909-laptop-indoor-dark-06`
+- [x] 应用图标资源接入：确认样张原样保存为 `resources/icons/rongjing.png`，派生 ICNS/ICO；源码窗口图标与 Mac/Windows 打包入口均使用该资源。冻结包与本机安装效果待验证。
 
 ---
 
