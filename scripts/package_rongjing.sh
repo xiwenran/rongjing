@@ -51,7 +51,7 @@ pyinstaller \
   --noconfirm \
   --add-data "_build_info.py:." \
   --add-data "resources/icons/rongjing.png:resources/icons" \
-  --add-binary "$PAGE_CURL_HELPER:helpers/page_curl" \
+  --add-binary "build/page_curl/PageCurlRenderer:helpers/page_curl" \
   main.py
 
 echo ""

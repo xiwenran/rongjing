@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('_build_info.py', '.'), ('resources/icons/rongjing.png', 'resources/icons')]
-binaries = []
+binaries = [('build/page_curl/PageCurlRenderer', 'helpers/page_curl')]
 hiddenimports = ['PIL._tkinter_finder', 'av', 'numpy', 'cv2']
 hiddenimports += collect_submodules('openai')
 tmp_ret = collect_all('av')
